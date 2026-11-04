@@ -10,6 +10,41 @@ A Rust CLI that wraps Cargo with a centralized, owned intermediate-build cache a
 - The Cargo executable wrapped for managed builds must be **1.91+**, with stable `build.build-dir` support. An older Cargo may compile cargoc but cannot run its managed builds.
 - Windows, Linux, or macOS. This is a native Rust application, not a Python script.
 
+### Prebuilt installer (no Rust compiler needed)
+
+Linux/macOS:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/bigfish1913/cargoc/main/scripts/install.sh | sh
+# Preview a pinned install without downloading it:
+# sh scripts/install.sh --version 0.1.2 --dry-run
+```
+
+Windows PowerShell 5.1+ (x64 and ARM64):
+
+```powershell
+& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/bigfish1913/cargoc/main/scripts/install.ps1).Content))
+# With a downloaded script: .\scripts\install.ps1 -Version 0.1.2 -DryRun
+```
+
+Review the downloaded script before running it if you do not want to execute remote code directly. Both installers require the release's SHA-256 checksum, verify the binary version, and refuse to overwrite an existing installation. They install only `cargoc`, never Rustup's `cargo`, and do not edit PATH/configuration or enable the shim. Defaults: `~/.local/bin` on Unix, `%LOCALAPPDATA%/Programs/cargoc` on Windows. Use `--dir` / `-Dir` to choose another directory; follow the printed PATH instructions.
+
+### Package managers
+
+```sh
+# macOS Intel/Apple Silicon and Linux x64/ARM64 (glibc 2.35+)
+brew tap bigfish1913/tap
+brew install cargoc
+
+# Windows x64/ARM64
+scoop bucket add bigfish1913 https://github.com/bigfish1913/scoop-bucket
+scoop install cargoc
+```
+
+The [Homebrew tap](https://github.com/bigfish1913/homebrew-tap) and [Scoop bucket](https://github.com/bigfish1913/scoop-bucket) use hashes from published release assets. These are owner-maintained channels, not Homebrew core or Microsoft's winget. See [channel maintenance](packaging/README.md).
+
+### crates.io and source builds
+
 Install the published release from [crates.io](https://crates.io/crates/cargoc):
 
 ```sh
@@ -28,7 +63,7 @@ cargo install --path . --locked
 
 `--locked` uses the committed `Cargo.lock` for reproducible dependency versions.
 
-> **Version note:** The **0.1.1** source/GitHub release line adds Cargo-home configuration (`~/.cargo/cargoc.toml`), legacy-config migration, dual-version output, improved Windows shims, and self-update. crates.io remains a separate publication: its **0.1.0** release uses the legacy configuration locations listed in the migration section. Use a completed GitHub Release or install from source for these features.
+> **Version note:** **0.1.2** adds installer/package-manager channels and source-aware update notices, on top of 0.1.1's Cargo-home configuration (`~/.cargo/cargoc.toml`), legacy-config migration, dual-version output, improved Windows shims, and self-update. crates.io remains a separate publication: its **0.1.0** release uses the legacy configuration locations listed in the migration section. Use a completed GitHub Release or install from source for these features.
 
 To choose a dedicated root, use this **instead of** the default `init` above:
 
@@ -76,7 +111,7 @@ After enabling integration and refreshing PATH, `cargo --version` shows both ver
 
 ```text
 cargo 1.99.1 (...)
-cargoc 0.1.1
+cargoc 0.1.2
 ```
 
 `cargo -V`, `cargo -vV`, `cargo version`, and `cargo +stable --version` also show both versions. Verbose Cargo metadata and Cargo's failure exit codes are preserved. `cargoc --version` still shows only cargoc's own version.
@@ -127,6 +162,25 @@ Some commands, including Cargo `fmt`, `new`, `init`, `install`, `metadata`, `fet
 
 ## Updating cargoc
 
+### Update notices
+
+Interactive managed build commands check for updates in a separate, short-lived process; the foreground command never waits for HTTP. A successful check is cached for 24 hours under `~/.cargoc/updates/<source>/check.json`; failures are silent and retried no more than hourly. A previously fetched version is usable for up to seven days without extending its freshness after failures. A fast first command may finish before the check; the notice then appears on a later invocation.
+
+Notices appear only on stderr after a successful build and never install anything. They are disabled for CI, redirected/non-terminal stderr, help/version, machine-readable output, `--offline`, `--frozen`, and `CARGO_NET_OFFLINE=true`. Set `CARGOC_DISABLE_UPDATE_CHECK=1` to disable them entirely. Cargo-registry installs check crates.io; other channels check stable GitHub Releases, so an unpublished GitHub version is not advertised as a crates.io update.
+
+The suggested command follows the detected installation:
+
+| Installation | Update command |
+| --- | --- |
+| Prebuilt installer / standalone binary / local source build | `cargoc self-update` |
+| crates.io (`cargo install`) | `cargo install cargoc --locked` |
+| Homebrew | `brew update && brew upgrade bigfish1913/tap/cargoc` |
+| Scoop | `scoop update && scoop update cargoc` |
+
+Detection is best-effort, using the executable path and Cargo's registry-install record. Direct `self-update`/rollback refuses detected package-manager installations, even with `--force`; use the corresponding package manager. `self-update --check` reports the source and appropriate command without replacing files.
+
+### Standalone binary updates
+
 `cargoc self-update` checks the official GitHub Releases API, selects the archive for the current OS and CPU, downloads it over HTTPS, verifies the release-provided SHA-256 file, extracts only the expected binary without unpacking other paths, and verifies its version before replacement:
 
 ```sh
@@ -139,7 +193,7 @@ The updater replaces only the running `cargoc` executable. It never changes Rust
 
 Only published stable releases are selected. SHA-256 detects corrupted downloads; it is **not an independent publisher signature**. The updater trusts this project's GitHub account, release assets and HTTPS. No compatible Release exists until the release workflow has successfully published one.
 
-Updates are explicit by default: normal Cargo/build invocations do not contact GitHub. Automatic updates are opt-in through your OS scheduler, not an implicit background service. No scheduled task is installed for you. Review the release policy, then use either example below to check and install daily; the executable is left unchanged when already current.
+Installation of updates remains explicit: background version discovery only prints a notice. Automatic installation for **standalone binaries only** is opt-in through your OS scheduler, not an implicit background service. No scheduled task is installed for you. Review the release policy, then use either example below to check and install daily; the executable is left unchanged when already current.
 
 Windows PowerShell (creates a task for the current user, without administrator privileges; that user must be logged in):
 
@@ -236,6 +290,8 @@ git add Cargo.toml Cargo.lock # also stage the reviewed source/docs changes
 git commit -m "Release 0.1.2"
 git push origin main
 ```
+
+Stable releases also attach generated `cargoc.rb` and `cargoc.json` manifests. The optional channel-sync job needs a narrowly scoped `CHANNELS_TOKEN` secret with Contents write access to the two channel repositories; without it, use the documented local sync command. Never store a token in the repository.
 
 No manual tag is needed. After formatting, Clippy, MSRV, all six native test/build jobs, packaged-binary smoke tests and checksum verification succeed, the workflow creates `v{version}` on the **exact tested commit**, uploads assets to a draft, then publishes it. It does not increment package versions or commit changes back to `main`. A push with an already-published version skips publication; bump the version to release again. Matching `v*` tag pushes remain supported and must exactly match the package version.
 

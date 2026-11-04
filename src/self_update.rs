@@ -384,6 +384,17 @@ pub fn run(check_only: bool, rollback: bool, force: bool) -> Result<()> {
     if rollback && (check_only || force) {
         return fail("--rollback conflicts with --check/--force");
     }
+    let source = crate::installation::current_source();
+    if source.package_managed() {
+        if check_only {
+            return crate::updates::check_explicit(source);
+        }
+        return fail(format!(
+            "This installation is managed by {}; use: {}",
+            source.key(),
+            source.update_command()
+        ));
+    }
     let executable = env::current_exe()?;
     let directory = rollback_dir(&executable)?;
     // Read-only checks need neither an installation lock nor a writable home.

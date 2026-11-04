@@ -1,8 +1,11 @@
 use cargoc::{
     Result,
     config::{Config, default_config_path, legacy_config_path, migrate_legacy_config},
-    fail, integration, runner, self_update,
+    fail,
+    installation::InstallSource,
+    integration, runner, self_update,
     store::{GcOptions, Store},
+    updates,
     util::{GIB, absolute, same_or_descendant},
 };
 use clap::{Args, Parser, Subcommand};
@@ -24,6 +27,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    #[command(name = "__update-check", hide = true)]
+    UpdateCheck {
+        #[arg(value_enum)]
+        source: InstallSource,
+    },
     /// Create a user configuration and a dedicated owned cache root
     Init(Settings),
     /// Interactive setup, or one-line enable/disable of the default Cargo shim
@@ -206,6 +214,10 @@ fn setup(
 }
 
 fn execute(cli: Cli) -> Result<i32> {
+    if let Commands::UpdateCheck { source } = &cli.command {
+        updates::run_worker(*source)?;
+        return Ok(0);
+    }
     // Updating must work even without a cache configuration, and --check must
     // not trigger legacy config migration.
     if let Commands::SelfUpdate {
@@ -226,6 +238,7 @@ fn execute(cli: Cli) -> Result<i32> {
         );
     }
     match cli.command {
+        Commands::UpdateCheck { source } => updates::run_worker(source)?,
         Commands::Init(values) => settings(&path, values, true)?,
         Commands::Setup {
             settings,
@@ -278,7 +291,13 @@ fn execute(cli: Cli) -> Result<i32> {
         }
         Commands::Exec { args } | Commands::Cargo(args) => {
             runner::install_signal_handler()?;
-            return runner::run(Config::load(&path)?, &path, &args);
+            let config = Config::load(&path)?;
+            let check_updates = updates::start(&args);
+            let result = runner::run(config, &path, &args);
+            if check_updates && matches!(result, Ok(0)) {
+                updates::show_notice();
+            }
+            return result;
         }
     }
     Ok(0)

@@ -30,7 +30,7 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - name: Test release policy
-        run: node --test .github/scripts/release-version.test.mjs
+        run: node --test .github/scripts/release-version.test.mjs .github/scripts/package-channels.test.mjs
       - name: Read version and check whether it is already published
         id: version
         shell: bash
@@ -125,7 +125,7 @@ jobs:
           binary="$CARGO_TARGET_DIR/$TARGET/release/cargoc"
           if [[ "$RUNNER_OS" == Windows ]]; then binary="$binary.exe"; fi
           export CARGOC_TEST_BINARY="$binary"
-          node --test .github/scripts/package-release.test.mjs
+          node --test .github/scripts/package-release.test.mjs .github/scripts/install.test.mjs
           node .github/scripts/package-release.mjs "$binary" "$TARGET" "$VERSION" "$RUNNER_TEMP/release-dist"
       - name: Upload archive and SHA-256 checksum
         uses: actions/upload-artifact@v4
@@ -185,6 +185,42 @@ jobs:
           if [[ "$PRERELEASE" == true ]]; then flags+=(--prerelease --latest=false); fi
           # Never overwrite an existing release or silently replace its assets.
           # A failed upload may leave a draft; inspect/delete it before retrying.
-          gh release create "$TAG" dist/* --verify-tag --draft --generate-notes \
+          channels=()
+          if [[ "$PRERELEASE" == false ]]; then
+            node .github/scripts/package-channels.mjs "${TAG#v}" dist/SHA256SUMS channels
+            channels=(channels/homebrew/cargoc.rb channels/scoop/cargoc.json)
+          fi
+          gh release create "$TAG" dist/* "${channels[@]}" --verify-tag --draft --generate-notes \
             --title "cargoc $TAG" "${flags[@]}"
           gh release edit "$TAG" --draft=false "${flags[@]}"
+
+  channels:
+    name: Sync Homebrew and Scoop (when configured)
+    needs: [prepare, publish]
+    if: needs.prepare.outputs.prerelease == 'false'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download published channel manifests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          mkdir -p channels/homebrew channels/scoop
+          gh release download "$TAG" --pattern cargoc.rb --dir channels/homebrew
+          gh release download "$TAG" --pattern cargoc.json --dir channels/scoop
+      - name: Sync owner-controlled channels
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.CHANNELS_TOKEN }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::notice::CHANNELS_TOKEN is not configured. Run sync-channels.mjs locally to update the taps; published manifests remain available on the Release."
+            exit 0
+          fi
+          node .github/scripts/sync-channels.mjs channels "$VERSION"

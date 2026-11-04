@@ -2,11 +2,13 @@
 //! Final Cargo artifacts are never garbage-collected by this library.
 pub mod cargo;
 pub mod config;
+pub mod installation;
 pub mod integration;
 mod process;
 pub mod runner;
 pub mod self_update;
 pub mod store;
+pub mod updates;
 pub mod util;
 #[cfg(windows)]
 mod windows_path;

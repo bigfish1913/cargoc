@@ -8,6 +8,23 @@ use std::{
 
 pub const GIB: f64 = 1_073_741_824.0;
 
+/// Read small advisory metadata without following links or allocating unbounded data.
+pub fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
+    use std::io::Read;
+    check_path(path)?;
+    if !std::fs::symlink_metadata(path)?.is_file() {
+        return fail("Metadata is not a regular file");
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return fail("Metadata file exceeds its size limit");
+    }
+    Ok(bytes)
+}
+
 pub fn now() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

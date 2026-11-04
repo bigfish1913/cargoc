@@ -10,6 +10,41 @@
 - 受包装的 Cargo 执行受管理构建需要 **1.91+**，以支持稳定的 `build.build-dir`。较旧的 Cargo 可能可以编译 cargoc，但不能执行受管理构建。
 - 支持 Windows、Linux、macOS。这是 Rust 程序，不是 Python 脚本。
 
+### 预编译一键安装（不需要 Rust 编译器）
+
+Linux/macOS：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/bigfish1913/cargoc/main/scripts/install.sh | sh
+# 下载脚本后，可以指定版本预览，不下载程序：
+# sh scripts/install.sh --version 0.1.2 --dry-run
+```
+
+Windows PowerShell 5.1+（x64／ARM64）：
+
+```powershell
+& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/bigfish1913/cargoc/main/scripts/install.ps1).Content))
+# 下载脚本后：.\scripts\install.ps1 -Version 0.1.2 -DryRun
+```
+
+不希望直接执行远程代码时，请先下载并检查脚本。两种安装器都强制校验 Release 的 SHA-256 和程序版本，拒绝覆盖已有安装，只安装 `cargoc`，不替换 Rustup 的 `cargo`，不改动 PATH／配置，也不启用接管。Unix 默认安装到 `~/.local/bin`，Windows 默认安装到 `%LOCALAPPDATA%/Programs/cargoc`；可用 `--dir`／`-Dir` 指定其他目录，再按输出提示添加 PATH。
+
+### 包管理器
+
+```sh
+# macOS Intel／Apple Silicon、Linux x64／ARM64（glibc 2.35+）
+brew tap bigfish1913/tap
+brew install cargoc
+
+# Windows x64／ARM64
+scoop bucket add bigfish1913 https://github.com/bigfish1913/scoop-bucket
+scoop install cargoc
+```
+
+[Homebrew tap](https://github.com/bigfish1913/homebrew-tap) 和 [Scoop bucket](https://github.com/bigfish1913/scoop-bucket) 使用实际发行包的哈希。这是作者维护的安装源，不是 Homebrew core 或微软 winget；维护说明见 [安装渠道](packaging/README.md)。
+
+### crates.io 与源码安装
+
 通过 [crates.io](https://crates.io/crates/cargoc) 安装已发布版本：
 
 ```sh
@@ -28,7 +63,7 @@ cargo install --path . --locked
 
 `--locked` 使用已提交的 `Cargo.lock`，固定依赖版本。
 
-> **版本说明：** **0.1.1** 源码／GitHub 发行线加入 Cargo 同目录配置（`~/.cargo/cargoc.toml`）、旧配置迁移、双版本输出、Windows shim 改进和自更新。crates.io 是独立发布渠道，其 **0.1.0** 仍使用迁移说明中列出的旧配置位置。需要这些新功能时，请使用已完成的 GitHub Release 或从源码安装。
+> **版本说明：** **0.1.2** 在 0.1.1 的 Cargo 同目录配置（`~/.cargo/cargoc.toml`）、旧配置迁移、双版本输出、Windows shim 改进和自更新基础上，新增安装器／包管理器渠道与按安装来源区分的更新提示。crates.io 是独立发布渠道，其 **0.1.0** 仍使用迁移说明中列出的旧配置位置。需要这些新功能时，请使用已完成的 GitHub Release 或从源码安装。
 
 如需专用缓存根目录，用下面的命令**替代**上面的默认 `init`：
 
@@ -76,7 +111,7 @@ Windows 启用后需要重新打开终端，让用户级 PATH 生效。`--disabl
 
 ```text
 cargo 1.99.1 (...)
-cargoc 0.1.1
+cargoc 0.1.2
 ```
 
 `cargo -V`、`cargo -vV`、`cargo version`、`cargo +stable --version` 同样展示两个版本。Cargo 的详细版本元数据和失败退出码保持不变。`cargoc --version` 仍只显示 cargoc 自身版本。
@@ -127,6 +162,25 @@ cargoc exec init new-project
 
 ## 更新 cargoc
 
+### 更新提示
+
+交互式受管理构建通过独立的短生命周期进程检查新版本，前台不等待 HTTP。成功结果缓存 24 小时，保存在 `~/.cargoc/updates/<source>/check.json`；失败静默处理，最多每小时重试。旧版本信息最多沿用七天，失败不会延长成功结果的新鲜度。第一次命令执行很快时，检查可能稍后完成，提示会在后续调用中出现。
+
+提示只在构建成功后写入 stderr，不会自动安装。CI、stderr 非终端／被重定向、帮助／版本、机器可读输出、`--offline`、`--frozen` 和 `CARGO_NET_OFFLINE=true` 场景均不检查。设置 `CARGOC_DISABLE_UPDATE_CHECK=1` 可完全关闭。通过 Cargo registry 安装时检查 crates.io，其他来源检查 GitHub 稳定版，避免误把尚未发布到 crates.io 的版本当作 Cargo 渠道更新。
+
+升级命令按检测到的安装来源提示：
+
+| 安装来源 | 升级命令 |
+| --- | --- |
+| 一键安装／独立二进制／本地源码构建 | `cargoc self-update` |
+| crates.io（`cargo install`） | `cargo install cargoc --locked` |
+| Homebrew | `brew update && brew upgrade bigfish1913/tap/cargoc` |
+| Scoop | `scoop update && scoop update cargoc` |
+
+来源检测基于程序路径和 Cargo 的 registry 安装记录，属于尽力识别。识别到包管理器安装后，直接 `self-update`／回滚会被拒绝，即使传入 `--force` 也不会覆盖其文件；请使用对应包管理器。`self-update --check` 会报告来源与合适的升级命令，不替换文件。
+
+### 独立二进制更新
+
 `cargoc self-update` 会访问官方 GitHub Releases API，根据当前系统和 CPU 选择对应压缩包，通过 HTTPS 下载，校验 Release 提供的 SHA-256 文件，只提取预期位置的二进制、不展开其余路径，并在替换前验证版本：
 
 ```sh
@@ -139,7 +193,7 @@ cargoc self-update --rollback
 
 仅选择已公开的稳定版 Release。SHA-256 用来检测下载损坏，**不等于独立的发布者签名**；更新器信任本项目的 GitHub 账号、Release 资产及 HTTPS。必须先由发布工作流成功发布兼容的 Release，才有可下载的更新。
 
-默认更新是显式触发的：普通 Cargo／构建调用不会主动连接 GitHub。**自动更新通过操作系统的计划任务主动启用**，不是隐式后台服务；安装 cargoc 不会替你创建任务。确认发布策略后，可用下面任一方式每日自动检查并安装；已是最新版本时不改动可执行文件。
+**安装更新仍须显式触发**：后台发现新版本只显示提示。仅对**独立二进制**，可通过操作系统计划任务主动启用自动安装更新，而不是隐式后台服务；安装 cargoc 不会替你创建任务。确认发布策略后，可用下面任一方式每日自动检查并安装；已是最新版本时不改动可执行文件。
 
 Windows PowerShell（为当前用户创建任务，无需管理员权限；执行时该用户需已登录）：
 
@@ -236,6 +290,8 @@ git add Cargo.toml Cargo.lock # 同时暂存审核后的源码／文档改动
 git commit -m "Release 0.1.2"
 git push origin main
 ```
+
+稳定版还会附带生成的 `cargoc.rb`、`cargoc.json` 安装源清单。可选的源同步任务需要 `CHANNELS_TOKEN` Secret，授权范围仅需两个安装源仓库的 Contents 写权限；未配置时按渠道维护文档在本地同步，不要把令牌写入代码库。
 
 不需要手动打标签。格式、Clippy、MSRV、六个平台的原生测试／构建、打包后二进制测试及校验和验证全部通过后，工作流自动在**实际测试的提交**上创建 `v{version}`，将资源上传至草稿，再公开发布。它不会自行递增项目版本，也不会回写 `main`。推送的版本已经发布时，跳过重复发布；下一次发行需要提升版本号。仍支持手动推送 `v*` 标签，但必须与项目版本完全一致。
 
