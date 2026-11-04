@@ -17,14 +17,14 @@ Linux/macOS：
 ```sh
 curl -fsSL https://raw.githubusercontent.com/bigfish1913/cargoc/main/scripts/install.sh | sh
 # 下载脚本后，可以指定版本预览，不下载程序：
-# sh scripts/install.sh --version 0.1.2 --dry-run
+# sh scripts/install.sh --version 0.1.3 --dry-run
 ```
 
 Windows PowerShell 5.1+（x64／ARM64）：
 
 ```powershell
 & ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/bigfish1913/cargoc/main/scripts/install.ps1).Content))
-# 下载脚本后：.\scripts\install.ps1 -Version 0.1.2 -DryRun
+# 下载脚本后：.\scripts\install.ps1 -Version 0.1.3 -DryRun
 ```
 
 不希望直接执行远程代码时，请先下载并检查脚本。两种安装器都强制校验 Release 的 SHA-256 和程序版本，拒绝覆盖已有安装，只安装 `cargoc`，不替换 Rustup 的 `cargo`，不改动 PATH／配置，也不启用接管。Unix 默认安装到 `~/.local/bin`，Windows 默认安装到 `%LOCALAPPDATA%/Programs/cargoc`；可用 `--dir`／`-Dir` 指定其他目录，再按输出提示添加 PATH。
@@ -42,6 +42,40 @@ scoop install cargoc
 ```
 
 [Homebrew tap](https://github.com/bigfish1913/homebrew-tap) 和 [Scoop bucket](https://github.com/bigfish1913/scoop-bucket) 使用实际发行包的哈希。这是作者维护的安装源，不是 Homebrew core 或微软 winget；维护说明见 [安装渠道](packaging/README.md)。
+
+#### 安装后接管默认 Cargo 命令
+
+Homebrew／Scoop 安装的只是 `cargoc`，**不会自动启用接管，也不会替换真实 Cargo 可执行文件**。请先安装 Cargo，再按下面的步骤让直接输入的 `cargo` 命令经过 cargoc。
+
+**macOS／Homebrew**（Linux 上的 Homebrew 同样适用）：
+
+```sh
+cargoc setup --enable
+export PATH="$HOME/.cargoc/bin:$PATH"
+command -v cargo
+cargo --version
+cargoc setup --status
+```
+
+`export` 只对当前 shell 生效。需要持久生效时，将这一行加入对应的 shell 启动文件，例如 macOS 默认交互式 zsh 的 `~/.zshrc`；setup 不会自动修改它。`command -v cargo` 应指向 `~/.cargoc/bin/cargo`，该目录必须排在真实 Cargo 目录前面。
+
+**Windows／Scoop**，在 PowerShell 中执行：
+
+```powershell
+cargoc setup --enable
+# 重新打开终端后，再执行下面的检查：
+Get-Command cargo
+cargo --version
+cargoc setup --status
+```
+
+Setup 会把 `%USERPROFILE%\.cargoc\bin` 放到**用户级 PATH** 前面，并创建原生 `cargo.exe` 代理及兼容的 `cargo.cmd`、`cargo` shell 脚本。默认 PATHEXT 下，`Get-Command cargo` 应指向该目录中的 `cargo.exe`；直接通过 PATH 启动 `cargo.exe` 的工具也会经过代理。代理逐项转发原始参数、保留退出码，并固定使用 setup 时选择的 cargoc 配置。已有终端和 IDE 需要重启才能继承新 PATH，系统级 PATH 中的 Cargo 项仍可能优先。
+
+两种方式下，`cargo --version` 都应显示 Cargo 与 cargoc 两个版本，接管状态应包含 `shim_installed=true active_in_current_path=true`。Windows 还应检查 `Get-Command cargo.exe` 和 `cargo.exe --version`。已有两脚本接管需要用新版本运行一次 `cargoc setup --enable` 才会补上原生代理。代理带完整性校验，不会覆盖或删除未知／损坏的同名文件；它不是发布者签名。
+
+这是基于 PATH 的接管，不会拦截所有 Cargo 调用：IDE／脚本使用真实 Cargo 的绝对路径或 `rustup run <toolchain> cargo ...` 仍会绕过接管，需要调整这些工具的启动入口。恢复原生入口可执行 `cargoc setup --disable`，不会删除或替换原 Cargo。
+
+升级请使用 `brew update && brew upgrade bigfish1913/tap/cargoc` 或 `scoop update && scoop update cargoc`，不要使用 `cargoc self-update`。若此前已启用接管，升级或移动安装位置后，请再次运行 `cargoc setup --enable` 并检查状态：生成的 shim 保存的是 cargoc 绝对路径，包管理器升级时该路径可能变化，尤其是 Homebrew 的版本目录。
 
 ### crates.io 与源码安装
 
@@ -63,7 +97,7 @@ cargo install --path . --locked
 
 `--locked` 使用已提交的 `Cargo.lock`，固定依赖版本。
 
-> **版本说明：** **0.1.2** 在 0.1.1 的 Cargo 同目录配置（`~/.cargo/cargoc.toml`）、旧配置迁移、双版本输出、Windows shim 改进和自更新基础上，新增安装器／包管理器渠道与按安装来源区分的更新提示。crates.io 是独立发布渠道，其 **0.1.0** 仍使用迁移说明中列出的旧配置位置。需要这些新功能时，请使用已完成的 GitHub Release 或从源码安装。
+> **版本说明：** **0.1.3** 新增 Windows 原生 `cargo.exe` 代理、受管理的 `cargo install` 缓存与非托管旧缓存只读审计；保留 0.1.2 的安装器／包管理器渠道、按安装来源区分的更新提示，以及 0.1.1 的 Cargo 同目录配置、迁移、双版本输出和自更新。升级后需再次运行 `cargoc setup --enable` 补上原生代理。crates.io 是独立发布渠道，其 **0.1.0** 仍使用迁移说明中列出的旧配置位置。需要这些新功能时，请使用已完成的 GitHub Release 或从源码安装。
 
 如需专用缓存根目录，用下面的命令**替代**上面的默认 `init`：
 
@@ -111,7 +145,7 @@ Windows 启用后需要重新打开终端，让用户级 PATH 生效。`--disabl
 
 ```text
 cargo 1.99.1 (...)
-cargoc 0.1.2
+cargoc 0.1.3
 ```
 
 `cargo -V`、`cargo -vV`、`cargo version`、`cargo +stable --version` 同样展示两个版本。Cargo 的详细版本元数据和失败退出码保持不变。`cargoc --version` 仍只显示 cargoc 自身版本。
@@ -144,7 +178,8 @@ cargoc self-update --rollback
 | `setup [设置项] [--enable\|--disable\|--status]` | 配置 cargoc，并可选择启用、恢复或检查默认 Cargo 接管。 |
 | `init [设置项]` | 创建用户配置和带所有权标记的缓存根目录。 |
 | `config [设置项]` | 显示配置，或更新指定设置项。 |
-| `status [--json]` | 显示受管理缓存大小、工作区记录及缓存所在卷的剩余空间；JSON 还包含配置。 |
+| `status [--json]` | 显示受管理工作区／安装缓存大小及缓存所在卷的剩余空间；JSON 还包含配置。 |
+| `audit --path PATH` | 只读盘点非托管旧缓存的逻辑字节、文件数和已有 Cargo 锁状态，输出 JSON；不接管、迁移或删除。 |
 | `clean [--dry-run]` | 清空**所有空闲的受管理中间缓存**，不只处理过期或超预算缓存。预演报告拟删除内容，不删除缓存文件。 |
 | `self-update [--check\|--rollback\|--force]` | 检查或安装最新 GitHub Release，也可恢复本地最新回滚备份。 |
 | `exec <Cargo 参数...>` | 转发与 cargoc 命令重名的 Cargo 命令，或以 Cargo 选项、工具链选择器开头的调用。 |
@@ -158,7 +193,11 @@ cargoc exec init new-project
 
 `cargoc exec clean` 执行 **Cargo 原生 clean**，可能删除 Cargo 所选目标目录中的最终产物及选定的中间缓存，请谨慎使用。`exec` 消除命令名冲突，不是通用的“关闭管理”开关。
 
-部分命令（例如 Cargo `fmt`、`new`、`init`、`install`、`metadata`、`fetch`、`update`）直接透传，并提示不使用受管理缓存，但仍需要 cargoc 配置。受管理命令拒绝 `--build-dir`、通过 Cargo `--config` 覆盖 `build.build-dir`，以及 Cargo `-C`；请切换工作目录或使用 `--manifest-path`。
+部分命令（例如 Cargo `fmt`、`new`、`init`、`metadata`、`fetch`、`update`）直接透传，并提示不使用受管理缓存，但仍需要 cargoc 配置。受管理命令拒绝 `--build-dir`、通过 Cargo `--config` 覆盖 `build.build-dir`，以及 Cargo `-C`；请切换工作目录或使用 `--manifest-path`。
+
+`cargoc install`／`cargoc exec install` 的 registry、git 和 `--path` 安装现在使用受管理中间缓存，无需在当前目录存在工作区。`install --list`、`install --help` 和 `help install` 仍直接透传。安装缓存与构建共用租约、预算、空间监测及清理规则；缓存身份包含 Cargo 版本、显式工具链和完整参数（本地源路径规范化），只保存摘要，不把 URL 凭据写入状态或 cargoc 日志。同一身份的并发安装会被拒绝；参数不同可能生成不同缓存。Cargo 自己的输出仍可能包含源地址。
+
+已安装程序仍在 Cargo 选择的安装根目录，`--target-dir` 也保留原生语义；两者不由 cargoc 清理。不要通过全局 Cargo 配置把源码、安装根目录或最终 target-dir 指进受管理根目录。cargoc 检查显式路径、相关环境变量和显式 `--config` 输出路径，但不会完整求值 Cargo 所有隐式配置层级。
 
 ## 更新 cargoc
 
@@ -266,6 +305,20 @@ cargoc config --auto-clean true --abort-free-gib 1
 
 专用缓存根目录属于可丢弃存储，**不要在里面存源码、手写笔记或最终 `target-dir` 产物**。缓存路径中的符号链接和重解析点会被拒绝。本工具面向可信用户的日常维护，不提供抵御其他进程恶意替换文件系统条目的安全沙箱。
 
+### 非托管旧缓存的处理
+
+如果 Cargo 全局配置仍含 `build.build-dir = "D:/BuildCache/cargo/{workspace-path-hash}"`，绕过 cargoc 的调用仍会写入该目录；它与 `D:/BuildCache/cargoc` 是两套独立缓存。先修正调用入口，再盘点旧数据：
+
+```sh
+cargoc audit --path D:/BuildCache/cargo
+cargoc status --json
+cargoc clean --dry-run
+```
+
+`audit` 不需要初始化配置，也不触发旧配置迁移。它拒绝符号链接／重解析点、与受管理根目录重叠的路径和含 cargoc 所有权标记的目录。`busy` 表示观察到锁竞争，`unavailable` 表示无法判断；即使是 `available` 或没有锁，也**不代表可以删除**。文件可能在检查后继续写入，也可能含最终产物。
+
+旧数据由其原所有者单独清理：停止相关 IDE、构建和后台任务，核对原 `build-dir`／`target-dir`、保留所需最终产物及恢复副本，再显式决定是否删除。不要把旧目录直接改名塞进 cargoc 根目录、补所有权标记，或把原生 Cargo 的全局 `build-dir` 指到 cargoc 的 `workspaces`；这些操作绕过租约，可能造成误删。`audit` 故意不提供自动删除选项，`cargoc clean` 也不会触碰旧目录。
+
 ## 预编译发布
 
 推送到 `main` 后，`.github/workflows/release.yml` 自动发布新的项目版本，使用 GitHub 托管的原生 runner 构建以下平台：
@@ -279,15 +332,15 @@ cargoc config --auto-clean true --abort-free-gib 1
 | macOS Intel | `x86_64-apple-darwin`（`.tar.gz`） |
 | macOS Apple Silicon | `aarch64-apple-darwin`（`.tar.gz`） |
 
-发行构建成功后，可在 [GitHub Releases](https://github.com/bigfish1913/cargoc/releases) 下载，例如 `cargoc-v0.1.1-x86_64-pc-windows-msvc.zip`。每个包包含 `cargoc` 可执行文件、双语 README 和 MIT 许可证，另附 `.sha256` 校验文件；Release 还提供汇总的 `SHA256SUMS`。
+发行构建成功后，可在 [GitHub Releases](https://github.com/bigfish1913/cargoc/releases) 下载，例如 `cargoc-v0.1.3-x86_64-pc-windows-msvc.zip`。每个包包含 `cargoc` 可执行文件、双语 README 和 MIT 许可证，另附 `.sha256` 校验文件；Release 还提供汇总的 `SHA256SUMS`。
 
 选择对应架构的压缩包，核对 SHA-256 后解压，将 **`cargoc` / `cargoc.exe`** 放入 PATH 中已有的目录即可，不要覆盖 Rustup 的 `cargo`。安装预编译程序不需要 Rust 编译器，但受管理构建仍需要 Cargo 1.91+。Linux 包使用 glibc，在 Ubuntu 22.04（glibc 2.35）上构建，不提供 Alpine/musl 版本。Windows/macOS 程序未进行 Authenticode/Developer ID 签名或公证。
 
-维护者发布时，先将 `Cargo.toml` **及 `Cargo.lock`** 更新到新版本（例如 `0.1.2`），再把审核后的改动提交并推送到 `main`：
+维护者发布时，先将 `Cargo.toml` **及 `Cargo.lock`** 更新到新版本（例如 `0.1.3`），再把审核后的改动提交并推送到 `main`：
 
 ```sh
 git add Cargo.toml Cargo.lock # 同时暂存审核后的源码／文档改动
-git commit -m "Release 0.1.2"
+git commit -m "Release 0.1.3"
 git push origin main
 ```
 
@@ -295,7 +348,7 @@ git push origin main
 
 不需要手动打标签。格式、Clippy、MSRV、六个平台的原生测试／构建、打包后二进制测试及校验和验证全部通过后，工作流自动在**实际测试的提交**上创建 `v{version}`，将资源上传至草稿，再公开发布。它不会自行递增项目版本，也不会回写 `main`。推送的版本已经发布时，跳过重复发布；下一次发行需要提升版本号。仍支持手动推送 `v*` 标签，但必须与项目版本完全一致。
 
-`0.1.2-rc.1` 等版本会标记为预发布。不覆盖已有 Release、资源或指向其他提交的标签。上传失败可能留下草稿，重试前需检查并删除该草稿。由 `GITHUB_TOKEN` 创建的标签／Release 不会再次触发发行任务。此流程不向 crates.io 发布。
+`0.1.3-rc.1` 等版本会标记为预发布。不覆盖已有 Release、资源或指向其他提交的标签。上传失败可能留下草稿，重试前需检查并删除该草稿。由 `GITHUB_TOKEN` 创建的标签／Release 不会再次触发发行任务。此流程不向 crates.io 发布。
 
 只想预编译验证时，在 **Actions → Release → Run workflow** 手动运行（`workflow_dispatch`），产物作为 Actions Artifacts 保留 14 天，不创建标签或公开 Release。GitHub 托管 runner 标签可能调整，届时需更新矩阵。
 

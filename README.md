@@ -17,14 +17,14 @@ Linux/macOS:
 ```sh
 curl -fsSL https://raw.githubusercontent.com/bigfish1913/cargoc/main/scripts/install.sh | sh
 # Preview a pinned install without downloading it:
-# sh scripts/install.sh --version 0.1.2 --dry-run
+# sh scripts/install.sh --version 0.1.3 --dry-run
 ```
 
 Windows PowerShell 5.1+ (x64 and ARM64):
 
 ```powershell
 & ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/bigfish1913/cargoc/main/scripts/install.ps1).Content))
-# With a downloaded script: .\scripts\install.ps1 -Version 0.1.2 -DryRun
+# With a downloaded script: .\scripts\install.ps1 -Version 0.1.3 -DryRun
 ```
 
 Review the downloaded script before running it if you do not want to execute remote code directly. Both installers require the release's SHA-256 checksum, verify the binary version, and refuse to overwrite an existing installation. They install only `cargoc`, never Rustup's `cargo`, and do not edit PATH/configuration or enable the shim. Defaults: `~/.local/bin` on Unix, `%LOCALAPPDATA%/Programs/cargoc` on Windows. Use `--dir` / `-Dir` to choose another directory; follow the printed PATH instructions.
@@ -42,6 +42,40 @@ scoop install cargoc
 ```
 
 The [Homebrew tap](https://github.com/bigfish1913/homebrew-tap) and [Scoop bucket](https://github.com/bigfish1913/scoop-bucket) use hashes from published release assets. These are owner-maintained channels, not Homebrew core or Microsoft's winget. See [channel maintenance](packaging/README.md).
+
+#### Use cargoc as the default Cargo after installation
+
+Installing with Homebrew or Scoop installs `cargoc` only; it does **not** automatically enable Cargo integration or replace the real Cargo executable. Cargo must already be installed. To make bare `cargo` commands use cargoc:
+
+**macOS / Homebrew** (also applies to Homebrew on Linux):
+
+```sh
+cargoc setup --enable
+export PATH="$HOME/.cargoc/bin:$PATH"
+command -v cargo
+cargo --version
+cargoc setup --status
+```
+
+The `export` affects only the current shell. For persistence, add it to your shell startup file (for example, `~/.zshrc` for macOS's default interactive zsh). Setup does not edit that file. `command -v cargo` should select `~/.cargoc/bin/cargo`; that directory must precede the real Cargo directory on PATH.
+
+**Windows / Scoop**, in PowerShell:
+
+```powershell
+cargoc setup --enable
+# Reopen the terminal before running the following checks:
+Get-Command cargo
+cargo --version
+cargoc setup --status
+```
+
+Setup prepends `%USERPROFILE%\.cargoc\bin` to the **user-level** PATH and creates a native `cargo.exe` proxy alongside compatible `cargo.cmd` and `cargo` shell scripts. With the default PATHEXT, `Get-Command cargo` should select that directory's `cargo.exe`; tools launching `cargo.exe` through PATH also use the proxy. It forwards OS arguments individually, preserves exit codes, and uses the cargoc configuration selected during setup. Restart existing terminals and IDEs to inherit PATH changes. A machine-level Cargo PATH entry may still take precedence.
+
+In either case, `cargo --version` should show both Cargo and cargoc versions, and setup status should report `shim_installed=true active_in_current_path=true`. On Windows, also check `Get-Command cargo.exe` and `cargo.exe --version`. Upgrade an existing two-script installation by running `cargoc setup --enable` with the new version. The native proxy has an integrity-checked ownership trailer and refuses to overwrite/delete unknown or corrupt files; this is not a publisher signature.
+
+Integration remains PATH-based: IDEs/scripts using the real Cargo's absolute path or `rustup run <toolchain> cargo ...` still bypass it and need their launch command adjusted. Run `cargoc setup --disable` to remove integration; it leaves the original Cargo untouched.
+
+Upgrade with `brew update && brew upgrade bigfish1913/tap/cargoc` or `scoop update && scoop update cargoc`, not `cargoc self-update`. If integration was enabled, run `cargoc setup --enable` again after upgrading or moving the installation, then verify the status. The generated shim stores an absolute cargoc path, which may change across package-manager upgrades, especially with Homebrew's versioned directories.
 
 ### crates.io and source builds
 
@@ -63,7 +97,7 @@ cargo install --path . --locked
 
 `--locked` uses the committed `Cargo.lock` for reproducible dependency versions.
 
-> **Version note:** **0.1.2** adds installer/package-manager channels and source-aware update notices, on top of 0.1.1's Cargo-home configuration (`~/.cargo/cargoc.toml`), legacy-config migration, dual-version output, improved Windows shims, and self-update. crates.io remains a separate publication: its **0.1.0** release uses the legacy configuration locations listed in the migration section. Use a completed GitHub Release or install from source for these features.
+> **Version note:** **0.1.3** adds a native Windows `cargo.exe` proxy, managed `cargo install` caches, and read-only external-cache auditing. It retains 0.1.2's installer/package-manager channels and source-aware update notices, plus 0.1.1's Cargo-home configuration, migration, dual-version output, and self-update. After upgrading, run `cargoc setup --enable` again to create the native proxy. crates.io remains a separate publication: its **0.1.0** release uses the legacy configuration locations listed in the migration section. Use a completed GitHub Release or install from source for these features.
 
 To choose a dedicated root, use this **instead of** the default `init` above:
 
@@ -111,7 +145,7 @@ After enabling integration and refreshing PATH, `cargo --version` shows both ver
 
 ```text
 cargo 1.99.1 (...)
-cargoc 0.1.2
+cargoc 0.1.3
 ```
 
 `cargo -V`, `cargo -vV`, `cargo version`, and `cargo +stable --version` also show both versions. Verbose Cargo metadata and Cargo's failure exit codes are preserved. `cargoc --version` still shows only cargoc's own version.
@@ -144,7 +178,8 @@ cargoc self-update --rollback
 | `setup [settings] [--enable\|--disable\|--status]` | Configure cargoc and optionally enable, restore, or inspect default Cargo integration. |
 | `init [settings]` | Create a user configuration and an owned cache root. |
 | `config [settings]` | Show configuration, or update supplied settings. |
-| `status [--json]` | Report managed cache sizes, workspace records, and free space on the cache volume. JSON also includes configuration. |
+| `status [--json]` | Report managed workspace/install caches and free space on the cache volume. JSON also includes configuration. |
+| `audit --path PATH` | Read-only JSON inventory of external caches: logical bytes, file counts, and existing Cargo lock observations. Never adopts, moves, or deletes files. |
 | `clean [--dry-run]` | Clear **all idle managed intermediate caches**, not just old/over-budget ones. Dry run reports proposed removals without deleting cache files. |
 | `self-update [--check\|--rollback\|--force]` | Check or install the latest native GitHub Release, or restore the newest local rollback backup. |
 | `exec <cargo arguments...>` | Forward a command whose name collides with cargoc's own commands, or start with Cargo options/toolchain selection. |
@@ -158,7 +193,11 @@ cargoc exec init new-project
 
 `cargoc exec clean` invokes **native Cargo clean**, which can delete final outputs from Cargo's selected target directory as well as the selected intermediates. Use it deliberately. `exec` escapes command-name collisions; it does not generally disable management.
 
-Some commands, including Cargo `fmt`, `new`, `init`, `install`, `metadata`, `fetch`, and `update`, are direct passthroughs and print a notice that they do not use the managed cache. A cargoc configuration is still required. Managed commands reject `--build-dir`, Cargo `--config` overrides of `build.build-dir`, and Cargo `-C`; change directories or use `--manifest-path` instead.
+Some commands, including Cargo `fmt`, `new`, `init`, `metadata`, `fetch`, and `update`, are direct passthroughs and print a notice that they do not use the managed cache. A cargoc configuration is still required. Managed commands reject `--build-dir`, Cargo `--config` overrides of `build.build-dir`, and Cargo `-C`; change directories or use `--manifest-path` instead.
+
+Registry, git, and `--path` installations through `cargoc install` / `cargoc exec install` now use managed intermediate caches without requiring a workspace in the current directory. `install --list`, `install --help`, and `help install` remain passthroughs. Installs share the build lifecycle's leases, budget, disk monitoring, and cleanup. Identity includes the Cargo version, explicit toolchain, and complete arguments (local source paths normalized); only digests are stored, not URL credentials in state or cargoc logs. Identical concurrent installs are refused; different arguments may select different caches. Cargo's own output may still include source URLs.
+
+Installed programs remain in Cargo's selected install root, and `--target-dir` keeps its native meaning; neither is collected. Never point sources, the install root, or final target-dir into the managed root through global Cargo configuration. cargoc checks explicit paths, relevant environment variables, and explicit `--config` output paths, but does not fully evaluate every implicit Cargo configuration layer.
 
 ## Updating cargoc
 
@@ -266,6 +305,20 @@ Automatic cleanup and Cargo exit events are written to `events.jsonl` beside the
 
 The dedicated cache root is disposable storage: do not put source files, manual notes, or final `target-dir` outputs inside it. Symlinks/reparse points in cache paths are refused. This is a trusted-user maintenance tool, not protection against another process maliciously replacing filesystem entries during cleanup.
 
+### Handling external legacy caches
+
+A global Cargo setting such as `build.build-dir = "D:/BuildCache/cargo/{workspace-path-hash}"` still sends bypassed invocations to that directory, independently of `D:/BuildCache/cargoc`. Fix the launch commands first, then inventory the legacy data:
+
+```sh
+cargoc audit --path D:/BuildCache/cargo
+cargoc status --json
+cargoc clean --dry-run
+```
+
+`audit` requires no initialized configuration and does not migrate legacy settings. It refuses symlinks/reparse points, overlap with the managed root, and directories containing cargoc ownership markers. `busy` indicates observed contention; `unavailable` means activity could not be assessed. Even `available` or missing locks **do not authorize deletion**: writers may resume after inspection, and final outputs may be present.
+
+The original owner must handle legacy data separately: stop related IDEs, builds and background tasks, verify the original build-dir/target-dir, retain needed final artifacts and recovery copies, then explicitly decide on removal. Never move old directories into cargoc's root, add ownership markers, or point native Cargo's global build-dir into cargoc's `workspaces`: these bypass leases and risk deletion during a build. `audit` intentionally has no automatic deletion option, and `cargoc clean` leaves external caches alone.
+
 ## Prebuilt releases
 
 Pushes to `main` automatically publish a new package version through `.github/workflows/release.yml`, using native GitHub-hosted runners for:
@@ -279,15 +332,15 @@ Pushes to `main` automatically publish a new package version through `.github/wo
 | macOS Intel | `x86_64-apple-darwin` (`.tar.gz`) |
 | macOS Apple Silicon | `aarch64-apple-darwin` (`.tar.gz`) |
 
-After a successful release build, archives are available from [GitHub Releases](https://github.com/bigfish1913/cargoc/releases), for example `cargoc-v0.1.1-x86_64-pc-windows-msvc.zip`. Each archive contains the `cargoc` executable, both README files, and the MIT license. Each has a `.sha256` sidecar; the Release also includes a combined `SHA256SUMS` file.
+After a successful release build, archives are available from [GitHub Releases](https://github.com/bigfish1913/cargoc/releases), for example `cargoc-v0.1.3-x86_64-pc-windows-msvc.zip`. Each archive contains the `cargoc` executable, both README files, and the MIT license. Each has a `.sha256` sidecar; the Release also includes a combined `SHA256SUMS` file.
 
 Download the archive for your architecture, verify its checksum, extract it, and put **only `cargoc` / `cargoc.exe`** in a directory on PATH. Never overwrite Rustup's `cargo` executable. A Rust compiler is not needed to install the prebuilt program, but managed builds still require Cargo 1.91+. Linux archives use glibc, built on Ubuntu 22.04 (glibc 2.35); Alpine/musl binaries are not provided. Windows/macOS binaries are not Authenticode/Developer ID signed or notarized.
 
-For maintainers, update `Cargo.toml` **and `Cargo.lock`** to a new version (for example, `0.1.2`), then commit and push the reviewed changes to `main`:
+For maintainers, update `Cargo.toml` **and `Cargo.lock`** to a new version (for example, `0.1.3`), then commit and push the reviewed changes to `main`:
 
 ```sh
 git add Cargo.toml Cargo.lock # also stage the reviewed source/docs changes
-git commit -m "Release 0.1.2"
+git commit -m "Release 0.1.3"
 git push origin main
 ```
 
@@ -295,7 +348,7 @@ Stable releases also attach generated `cargoc.rb` and `cargoc.json` manifests. T
 
 No manual tag is needed. After formatting, Clippy, MSRV, all six native test/build jobs, packaged-binary smoke tests and checksum verification succeed, the workflow creates `v{version}` on the **exact tested commit**, uploads assets to a draft, then publishes it. It does not increment package versions or commit changes back to `main`. A push with an already-published version skips publication; bump the version to release again. Matching `v*` tag pushes remain supported and must exactly match the package version.
 
-Versions such as `0.1.2-rc.1` become prereleases. Existing releases/assets and tags pointing to another commit are never overwritten. A failed upload may leave a draft that must be inspected and removed before retrying. Tag/Release creation by `GITHUB_TOKEN` does not start another release run. This does not publish to crates.io.
+Versions such as `0.1.3-rc.1` become prereleases. Existing releases/assets and tags pointing to another commit are never overwritten. A failed upload may leave a draft that must be inspected and removed before retrying. Tag/Release creation by `GITHUB_TOKEN` does not start another release run. This does not publish to crates.io.
 
 For a build-only run, use **Actions → Release → Run workflow** (`workflow_dispatch`): it uploads Actions artifacts retained for 14 days, without creating a tag or publishing a Release. GitHub-hosted runner labels can change; update the matrix if necessary.
 

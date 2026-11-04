@@ -1,9 +1,11 @@
 //! A Cargo wrapper that owns and bounds intermediate build caches.
 //! Final Cargo artifacts are never garbage-collected by this library.
+pub mod audit;
 pub mod cargo;
 pub mod config;
 pub mod installation;
 pub mod integration;
+pub mod native_shim;
 mod process;
 pub mod runner;
 pub mod self_update;

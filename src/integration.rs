@@ -46,7 +46,7 @@ fn save_state(state: &IntegrationState) -> crate::Result<()> {
 
 #[cfg(windows)]
 fn shim_path() -> PathBuf {
-    shim_dir().join("cargo.cmd")
+    shim_dir().join("cargo.exe")
 }
 #[cfg(not(windows))]
 fn shim_path() -> PathBuf {
@@ -76,6 +76,7 @@ fn shell_script(executable: &str, config: &str) -> String {
 
 fn shim_paths() -> Vec<PathBuf> {
     std::iter::once(shim_path())
+        .chain(cfg!(windows).then(|| shim_dir().join("cargo.cmd")))
         .chain(cfg!(windows).then(|| shim_dir().join("cargo")))
         .collect()
 }
@@ -83,7 +84,14 @@ fn shim_paths() -> Vec<PathBuf> {
 fn check_shims() -> crate::Result<()> {
     for path in shim_paths() {
         check_path(&path)?;
-        if path.exists() && !cargo::generated_shim(&path)? {
+        let owned = if !path.exists() {
+            true
+        } else if cfg!(windows) && path == shim_path() {
+            crate::native_shim::inspect(&path)?.is_some()
+        } else {
+            cargo::generated_shim(&path)?
+        };
+        if !owned {
             return fail(format!(
                 "Refusing to replace or delete an unowned shim: {}",
                 path.display()
@@ -94,6 +102,8 @@ fn check_shims() -> crate::Result<()> {
 }
 
 fn write_shim(executable: &Path, config_path: &Path) -> crate::Result<()> {
+    #[cfg(windows)]
+    crate::native_shim::install(&shim_path(), executable, config_path)?;
     let executable = executable
         .to_str()
         .ok_or("cargoc path is not valid UTF-8")?;
@@ -110,7 +120,7 @@ fn write_shim(executable: &Path, config_path: &Path) -> crate::Result<()> {
             executable.replace('%', "%%"),
             config.replace('%', "%%")
         );
-        atomic_write(&shim_path(), content.as_bytes())?;
+        atomic_write(&shim_dir().join("cargo.cmd"), content.as_bytes())?;
         // Git Bash does not resolve cargo.cmd when the command is named cargo.
         atomic_write(
             &shim_dir().join("cargo"),
@@ -226,9 +236,18 @@ fn disable_path() -> crate::Result<()> {
 }
 
 pub fn enable(
+    config: Config,
+    config_path: &Path,
+    explicit_cargo: Option<PathBuf>,
+) -> crate::Result<()> {
+    enable_with_path(config, config_path, explicit_cargo, enable_path)
+}
+
+fn enable_with_path(
     mut config: Config,
     config_path: &Path,
     explicit_cargo: Option<PathBuf>,
+    update_path: impl FnOnce() -> crate::Result<()>,
 ) -> crate::Result<()> {
     let real = if let Some(path) = explicit_cargo {
         cargo::resolve(&path, None)?
@@ -249,7 +268,7 @@ pub fn enable(
     crate::store::Store::open(config.clone(), true)?;
     config.save(config_path)?;
     write_shim(&absolute(&std::env::current_exe()?)?, config_path)?;
-    enable_path()?;
+    update_path()?;
     save_state(&IntegrationState {
         shim_dir: shim_dir(),
         real_cargo: real,
@@ -269,19 +288,17 @@ pub fn enable(
 }
 
 pub fn disable() -> crate::Result<()> {
+    disable_with_path(disable_path)
+}
+
+fn disable_with_path(update_path: impl FnOnce() -> crate::Result<()>) -> crate::Result<()> {
     if let Some(state) = load_state()? {
         check_shims()?;
-        disable_path()?;
-        if shim_path().exists() {
-            check_path(&shim_path())?;
-            fs::remove_file(shim_path())?;
-        }
-        #[cfg(windows)]
-        {
-            let shell = shim_dir().join("cargo");
-            if shell.exists() {
-                check_path(&shell)?;
-                fs::remove_file(shell)?;
+        update_path()?;
+        for path in shim_paths() {
+            if path.exists() {
+                check_path(&path)?;
+                fs::remove_file(path)?;
             }
         }
         save_state(&IntegrationState {
@@ -324,7 +341,9 @@ pub fn status() -> crate::Result<()> {
                 });
             let active = installed
                 && selected.as_ref().is_some_and(|path| {
-                    matches!((crate::util::identity_path(path), crate::util::identity_path(&shim_path())), (Ok(a), Ok(b)) if a == b)
+                    shim_paths().iter().any(|shim| {
+                        matches!((crate::util::identity_path(path), crate::util::identity_path(shim)), (Ok(a), Ok(b)) if a == b)
+                    })
                 });
             let config = state.config_path.as_ref().map(|path| Config::load(path));
             let config_valid = config.as_ref().is_none_or(|result| result.is_ok());
@@ -384,6 +403,110 @@ mod tests {
         );
         assert!(path_entry_matches(&format!("\"{shim}\\\""), shim));
         assert!(!path_entry_matches(&(shim.to_owned() + "-other"), shim));
+    }
+
+    // Child-process environment isolation; the injected callback is the only PATH
+    // operation, so this exercises setup/refresh/disable without registry writes.
+    #[cfg(windows)]
+    #[test]
+    fn native_setup_lifecycle_without_registry() {
+        use std::process::Command;
+        const CHILD: &str = "CARGOC_NATIVE_LIFECYCLE_CHILD";
+        if env::var_os(CHILD).is_none() {
+            let dir = tempfile::tempdir().unwrap();
+            let fake = dir.path().join("real-cargo.exe");
+            let compiled = Command::new(env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+                .args(["--edition=2021", "-o"])
+                .arg(&fake)
+                .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake_cargo.rs"))
+                .output()
+                .unwrap();
+            assert!(
+                compiled.status.success(),
+                "{}",
+                String::from_utf8_lossy(&compiled.stderr)
+            );
+            // Both native-first and legacy-script-first PATHEXT orders select
+            // an owned shim; status must not report a false bypass.
+            for extensions in [".EXE;.CMD;.COM;.BAT", ".CMD;.EXE;.BAT;.COM"] {
+                let output = Command::new(env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "integration::tests::native_setup_lifecycle_without_registry",
+                        "--nocapture",
+                    ])
+                    .env(CHILD, &fake)
+                    .env("HOME", dir.path())
+                    .env("USERPROFILE", dir.path())
+                    .env("CARGO_HOME", dir.path().join("cargo-home"))
+                    .env("PATH", dir.path().join(".cargoc/bin"))
+                    .env("PATHEXT", extensions)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "stdout={} stderr={}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let text = String::from_utf8_lossy(&output.stdout);
+                assert!(
+                    text.contains("shim_installed=true active_in_current_path=true"),
+                    "{text}"
+                );
+                assert!(text.contains("shim_installed=false"), "{text}");
+            }
+            return;
+        }
+        let fake = PathBuf::from(env::var_os(CHILD).unwrap());
+        let config_path = home().join("fixed config.toml");
+        let config = Config {
+            cargo: fake,
+            cache_dir: home().join("cache"),
+            min_free_gib: 0.0,
+            abort_free_gib: 0.0,
+            ..Config::default()
+        };
+        fs::create_dir_all(shim_dir()).unwrap();
+        // Upgrade from the previous two owned scripts.
+        fs::write(shim_dir().join("cargo.cmd"), "rem Generated by cargoc.\r\n").unwrap();
+        fs::write(shim_dir().join("cargo"), "# Generated by cargoc.\n").unwrap();
+        enable_with_path(config.clone(), &config_path, None, || Ok(())).unwrap();
+        assert!(shim_paths().iter().all(|p| p.is_file()));
+        status().unwrap();
+        // Old registered two-script installations are inactive until upgraded.
+        fs::remove_file(shim_path()).unwrap();
+        status().unwrap();
+        let refreshed = home().join("refreshed config.toml");
+        enable_with_path(config.clone(), &refreshed, None, || Ok(())).unwrap();
+        assert_eq!(
+            crate::native_shim::inspect(&shim_path())
+                .unwrap()
+                .unwrap()
+                .config,
+            refreshed
+        );
+        // A corrupted native image cannot be refreshed or deleted.
+        let original = fs::read(shim_path()).unwrap();
+        let mut corrupt = original.clone();
+        corrupt[2] ^= 1;
+        fs::write(shim_path(), &corrupt).unwrap();
+        let before = fs::read(&refreshed).unwrap();
+        assert!(
+            enable_with_path(config.clone(), &refreshed, None, || panic!("PATH changed")).is_err()
+        );
+        assert!(disable_with_path(|| panic!("PATH changed")).is_err());
+        assert_eq!(fs::read(&refreshed).unwrap(), before);
+        assert_eq!(fs::read(shim_path()).unwrap(), corrupt);
+        status().unwrap();
+        fs::write(shim_path(), "user executable").unwrap();
+        assert!(disable_with_path(|| panic!("PATH changed")).is_err());
+        assert!(enable_with_path(config, &refreshed, None, || panic!("PATH changed")).is_err());
+        assert_eq!(fs::read(shim_path()).unwrap(), b"user executable");
+        fs::write(shim_path(), original).unwrap();
+        disable_with_path(|| Ok(())).unwrap();
+        assert!(shim_paths().iter().all(|p| !p.exists()));
+        assert!(!load_state().unwrap().unwrap().enabled);
     }
 
     #[test]

@@ -77,6 +77,14 @@ impl Fixture {
             .arg("--cargoc-config")
             .arg(&self.config)
             .current_dir(&self.workspace)
+            .env("HOME", self._temp.path())
+            .env("USERPROFILE", self._temp.path())
+            .env("CARGO_HOME", self._temp.path().join("cargo-home"))
+            .env(
+                "RUSTUP_HOME",
+                std::env::var_os("RUSTUP_HOME")
+                    .unwrap_or_else(|| cargoc::config::home().join(".rustup").into_os_string()),
+            )
             .env("FAKE_WORKSPACE", &self.workspace)
             .env("FAKE_MANIFEST", self.workspace.join("Cargo.toml"))
             .env("FAKE_ARGUMENTS", &self.arguments);

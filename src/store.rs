@@ -15,6 +15,10 @@ use std::{
 
 const MARKER: &str = ".cargoc-root.json";
 
+fn empty_path(path: &Path) -> bool {
+    path.as_os_str().is_empty()
+}
+
 pub struct Lease(File);
 impl Lease {
     pub fn acquire(path: &Path, create: bool) -> Result<Option<Self>> {
@@ -47,12 +51,32 @@ struct Marker {
     root_id: String,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CacheKind {
+    #[default]
+    Workspace,
+    Install,
+}
+
+impl CacheKind {
+    fn is_workspace(&self) -> bool {
+        *self == Self::Workspace
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Record {
     pub root_id: String,
     pub key: String,
+    #[serde(default, skip_serializing_if = "empty_path")]
     pub workspace: PathBuf,
+    #[serde(default, skip_serializing_if = "CacheKind::is_workspace")]
+    pub kind: CacheKind,
+    /// Only a digest is persisted: install URLs/arguments may contain credentials.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_identity: Option<String>,
     pub last_used: f64,
 }
 
@@ -258,6 +282,42 @@ impl Store {
             root_id: self.root_id.clone(),
             key: key.clone(),
             workspace: absolute(workspace)?,
+            kind: CacheKind::Workspace,
+            install_identity: None,
+            last_used: now(),
+        };
+        atomic_write(
+            &self.root.join("state").join(format!("{key}.json")),
+            &serde_json::to_vec(&record)?,
+        )?;
+        Ok((key, path))
+    }
+
+    /// Installation caches share the same physical layout and GC/lease namespace,
+    /// but never pretend to be a source workspace.
+    pub fn install(&self, identity: &str) -> Result<(String, PathBuf)> {
+        if !valid_key(identity) {
+            return fail("Invalid install identity");
+        }
+        let key = format!(
+            "{:x}",
+            Sha256::digest(format!("cargoc-install-v1:{identity}"))
+        );
+        let path = self.root.join("workspaces").join(&key);
+        check_path(&path)?;
+        Ok((key, path))
+    }
+
+    /// Caller must hold the installation's lease.
+    pub fn touch_install(&self, identity: &str) -> Result<(String, PathBuf)> {
+        let (key, path) = self.install(identity)?;
+        fs::create_dir_all(&path)?;
+        let record = Record {
+            root_id: self.root_id.clone(),
+            key: key.clone(),
+            workspace: PathBuf::new(),
+            kind: CacheKind::Install,
+            install_identity: Some(identity.to_owned()),
             last_used: now(),
         };
         atomic_write(
@@ -276,14 +336,36 @@ impl Store {
         let record: Record = serde_json::from_slice(&fs::read(path)?)?;
         if record.root_id != self.root_id
             || record.key != key
-            || Self::key(&record.workspace)? != key
-            || !record.workspace.is_absolute()
             || !record.last_used.is_finite()
             || record.last_used < 0.0
         {
             return fail("Invalid cache record ownership/identity");
         }
-        self.workspace(&record.workspace)?;
+        match record.kind {
+            CacheKind::Workspace => {
+                if record.install_identity.is_some()
+                    || !record.workspace.is_absolute()
+                    || self.workspace(&record.workspace)?.0 != key
+                {
+                    return fail("Invalid workspace cache identity");
+                }
+            }
+            CacheKind::Install => {
+                if !record.workspace.as_os_str().is_empty()
+                    || self
+                        .install(
+                            record
+                                .install_identity
+                                .as_deref()
+                                .ok_or("Missing install identity")?,
+                        )?
+                        .0
+                        != key
+                {
+                    return fail("Invalid install cache identity");
+                }
+            }
+        }
         Ok(record)
     }
 

@@ -63,6 +63,10 @@ pub(crate) fn candidates(program: &Path, search: &OsStr) -> Vec<PathBuf> {
 }
 
 pub(crate) fn generated_shim(path: &Path) -> Result<bool> {
+    // Also reject copied/renamed proxies outside the normal integration directory.
+    if crate::native_shim::inspect(path)?.is_some() {
+        return Ok(true);
+    }
     let mut header = Vec::new();
     fs::File::open(path)?.take(512).read_to_end(&mut header)?;
     Ok([

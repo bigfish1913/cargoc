@@ -44,7 +44,7 @@ Use an authenticated `gh` session with permission for the two owner-controlled
 repositories. Download only the manifests from the already-published release:
 
 ```sh
-VERSION=0.1.2
+VERSION=0.1.3
 mkdir -p channels/homebrew channels/scoop
 gh release download "v$VERSION" --repo bigfish1913/cargoc --pattern cargoc.rb --dir channels/homebrew
 gh release download "v$VERSION" --repo bigfish1913/cargoc --pattern cargoc.json --dir channels/scoop
@@ -62,7 +62,7 @@ identical already-applied update is safe to observe and skip on the next run.
 To regenerate for inspection from a verified combined checksum file:
 
 ```sh
-node .github/scripts/package-channels.mjs 0.1.2 /path/to/SHA256SUMS /tmp/cargoc-channels
+node .github/scripts/package-channels.mjs 0.1.3 /path/to/SHA256SUMS /tmp/cargoc-channels
 ```
 
 Output directories must not already contain the output manifest files.

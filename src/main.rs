@@ -4,7 +4,7 @@ use cargoc::{
     fail,
     installation::InstallSource,
     integration, runner, self_update,
-    store::{GcOptions, Store},
+    store::{CacheKind, GcOptions, Store},
     updates,
     util::{GIB, absolute, same_or_descendant},
 };
@@ -57,6 +57,11 @@ enum Commands {
     Status {
         #[arg(long)]
         json: bool,
+    },
+    /// Read-only inventory of an external cache, without adopting or deleting it
+    Audit {
+        #[arg(long)]
+        path: PathBuf,
     },
     /// Download and safely install the latest native GitHub Release
     SelfUpdate {
@@ -231,6 +236,17 @@ fn execute(cli: Cli) -> Result<i32> {
     }
     let use_default = cli.config.is_none() && std::env::var_os("CARGOC_CONFIG").is_none();
     let path = absolute(&cli.config.unwrap_or_else(default_config_path))?;
+    // Auditing must not initialize storage or migrate any configuration.
+    if let Commands::Audit { path: external } = &cli.command {
+        let config = if path.exists() {
+            Config::load(&path)?
+        } else {
+            Config::default()
+        };
+        let report = cargoc::audit::inspect(external, &config.cache_dir)?;
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(0);
+    }
     if use_default && migrate_legacy_config(&path, &legacy_config_path())? {
         eprintln!(
             "cargoc: migrated config to {}; legacy config retained",
@@ -238,6 +254,7 @@ fn execute(cli: Cli) -> Result<i32> {
         );
     }
     match cli.command {
+        Commands::Audit { .. } => unreachable!("audit handled before configuration migration"),
         Commands::UpdateCheck { source } => updates::run_worker(source)?,
         Commands::Init(values) => settings(&path, values, true)?,
         Commands::Setup {
@@ -267,11 +284,11 @@ fn execute(cli: Cli) -> Result<i32> {
                     free as f64 / GIB
                 );
                 for entry in entries {
-                    println!(
-                        "  {:8.2} GiB  {}",
-                        entry.bytes as f64 / GIB,
-                        entry.record.workspace.display()
-                    );
+                    let label = match entry.record.kind {
+                        CacheKind::Workspace => entry.record.workspace.display().to_string(),
+                        CacheKind::Install => format!("install {}", entry.record.key),
+                    };
+                    println!("  {:8.2} GiB  {label}", entry.bytes as f64 / GIB);
                 }
             }
         }
@@ -304,7 +321,11 @@ fn execute(cli: Cli) -> Result<i32> {
 }
 
 fn main() {
-    let result = execute(Cli::parse());
+    let result = match cargoc::native_shim::dispatch() {
+        Ok(Some(code)) => Ok(code),
+        Ok(None) => execute(Cli::parse()),
+        Err(error) => Err(error),
+    };
     let code = match result {
         Ok(code) => code,
         Err(error) => {
