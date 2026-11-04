@@ -18,9 +18,7 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     env:
       CARGO_TERM_COLOR: always
-      # Separate per-job local outputs; do not use the native cargoc wrapper.
-      CARGO_TARGET_DIR: ${{ runner.temp }}/cargoc-target-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.os }}
-      CARGO_BUILD_BUILD_DIR: ${{ runner.temp }}/cargoc-build-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.os }}
+      # Invoke native Cargo, never the optional cargoc shim.
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -28,6 +26,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Isolate Cargo outputs
+        shell: bash
+        run: |
+          printf '%s\n' "CARGO_TARGET_DIR=$RUNNER_TEMP/cargoc-target" \
+            "CARGO_BUILD_BUILD_DIR=$RUNNER_TEMP/cargoc-build" >> "$GITHUB_ENV"
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Clippy
@@ -38,12 +41,13 @@ jobs:
   msrv:
     name: Rust 1.88 MSRV
     runs-on: ubuntu-latest
-    env:
-      CARGO_TARGET_DIR: ${{ runner.temp }}/cargoc-msrv
     steps:
       - name: Check out source
         uses: actions/checkout@v4
       - name: Install MSRV
         uses: dtolnay/rust-toolchain@1.88.0
+      - name: Isolate Cargo outputs
+        shell: bash
+        run: printf '%s\n' "CARGO_TARGET_DIR=$RUNNER_TEMP/cargoc-msrv" >> "$GITHUB_ENV"
       - name: Check all targets on MSRV
         run: cargo check --locked --all-targets

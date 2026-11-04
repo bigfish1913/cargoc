@@ -1,0 +1,190 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cargoc-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Validate release version
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+      build: ${{ steps.version.outputs.build }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test release policy
+        run: node --test .github/scripts/release-version.test.mjs
+      - name: Read version and check whether it is already published
+        id: version
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cargo metadata --locked --no-deps --format-version 1 > "$RUNNER_TEMP/metadata.json"
+          node .github/scripts/release-version.mjs "$RUNNER_TEMP/metadata.json"
+
+  quality:
+    name: Release checks (${{ matrix.toolchain }})
+    needs: prepare
+    if: needs.prepare.outputs.build == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [stable, '1.88.0']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rustfmt, clippy
+      - name: Isolate Cargo outputs
+        shell: bash
+        run: |
+          printf '%s\n' "CARGO_TARGET_DIR=$RUNNER_TEMP/cargoc-quality-target" \
+            "CARGO_BUILD_BUILD_DIR=$RUNNER_TEMP/cargoc-quality-build" >> "$GITHUB_ENV"
+      - name: Formatting
+        if: matrix.toolchain == 'stable'
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        if: matrix.toolchain == 'stable'
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: MSRV
+        if: matrix.toolchain == '1.88.0'
+        run: cargo check --locked --all-targets
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: [prepare, quality]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-15
+            target: aarch64-apple-darwin
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TERM_COLOR: always
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Isolate Cargo outputs
+        run: |
+          printf '%s\n' "CARGO_TARGET_DIR=$RUNNER_TEMP/cargoc-release-target" \
+            "CARGO_BUILD_BUILD_DIR=$RUNNER_TEMP/cargoc-release-build" >> "$GITHUB_ENV"
+      - name: Test on the native platform
+        run: cargo test --locked --all-targets --target "$TARGET"
+      - name: Build optimized binary
+        run: cargo build --locked --release --bin cargoc --target "$TARGET"
+      - name: Smoke-test and package release
+        run: |
+          binary="$CARGO_TARGET_DIR/$TARGET/release/cargoc"
+          if [[ "$RUNNER_OS" == Windows ]]; then binary="$binary.exe"; fi
+          export CARGOC_TEST_BINARY="$binary"
+          node --test .github/scripts/package-release.test.mjs
+          node .github/scripts/package-release.mjs "$binary" "$TARGET" "$VERSION" "$RUNNER_TEMP/release-dist"
+      - name: Upload archive and SHA-256 checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: cargoc-release-${{ matrix.target }}
+          path: ${{ runner.temp }}/release-dist/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  publish:
+    name: Publish verified GitHub Release
+    needs: [prepare, quality, build]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download this run's release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cargoc-release-*
+          merge-multiple: true
+          path: dist
+      - name: Verify all six archives and assemble checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          shopt -s nullglob
+          checksums=(*.sha256)
+          archives=(*.zip *.tar.gz)
+          [[ ${#checksums[@]} == 6 && ${#archives[@]} == 6 ]]
+          sha256sum --check "${checksums[@]}"
+          LC_ALL=C sort -k2 "${checksums[@]}" > SHA256SUMS
+      - name: Create or verify tag on the exact tested commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: node .github/scripts/release-version.mjs --ensure-tag
+      - name: Create draft, upload assets, then publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          flags=()
+          if [[ "$PRERELEASE" == true ]]; then flags+=(--prerelease --latest=false); fi
+          # Never overwrite an existing release or silently replace its assets.
+          # A failed upload may leave a draft; inspect/delete it before retrying.
+          gh release create "$TAG" dist/* --verify-tag --draft --generate-notes \
+            --title "cargoc $TAG" "${flags[@]}"
+          gh release edit "$TAG" --draft=false "${flags[@]}"

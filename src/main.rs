@@ -1,7 +1,7 @@
 use cargoc::{
     Result,
-    config::{Config, default_config_path},
-    fail, integration, runner,
+    config::{Config, default_config_path, legacy_config_path, migrate_legacy_config},
+    fail, integration, runner, self_update,
     store::{GcOptions, Store},
     util::{GIB, absolute, same_or_descendant},
 };
@@ -49,6 +49,18 @@ enum Commands {
     Status {
         #[arg(long)]
         json: bool,
+    },
+    /// Download and safely install the latest native GitHub Release
+    SelfUpdate {
+        /// Only check and report whether a newer release exists
+        #[arg(long)]
+        check: bool,
+        /// Restore the newest local rollback backup instead of downloading
+        #[arg(long, conflicts_with_all = ["check", "force"])]
+        rollback: bool,
+        /// Install even when the release version is not newer
+        #[arg(long, conflicts_with = "rollback")]
+        force: bool,
     },
     /// Clear idle managed intermediate caches, never final Cargo artifacts
     Clean {
@@ -175,8 +187,6 @@ fn setup(
     if same_or_descendant(path, &config.cache_dir)? {
         return fail("Config must be outside cache_dir");
     }
-    Store::open(config.clone(), true)?;
-    config.save(path)?;
     let should_enable = if enable || yes {
         true
     } else {
@@ -185,6 +195,8 @@ fn setup(
     if should_enable {
         integration::enable(config, path, explicit_cargo)
     } else {
+        Store::open(config.clone(), true)?;
+        config.save(path)?;
         println!("cargoc configured at {}", path.display());
         println!(
             "Default Cargo was not replaced. Run `cargoc setup --enable` later to enable the shim."
@@ -194,7 +206,25 @@ fn setup(
 }
 
 fn execute(cli: Cli) -> Result<i32> {
+    // Updating must work even without a cache configuration, and --check must
+    // not trigger legacy config migration.
+    if let Commands::SelfUpdate {
+        check,
+        rollback,
+        force,
+    } = &cli.command
+    {
+        self_update::run(*check, *rollback, *force)?;
+        return Ok(0);
+    }
+    let use_default = cli.config.is_none() && std::env::var_os("CARGOC_CONFIG").is_none();
     let path = absolute(&cli.config.unwrap_or_else(default_config_path))?;
+    if use_default && migrate_legacy_config(&path, &legacy_config_path())? {
+        eprintln!(
+            "cargoc: migrated config to {}; legacy config retained",
+            path.display()
+        );
+    }
     match cli.command {
         Commands::Init(values) => settings(&path, values, true)?,
         Commands::Setup {
@@ -232,6 +262,11 @@ fn execute(cli: Cli) -> Result<i32> {
                 }
             }
         }
+        Commands::SelfUpdate {
+            check,
+            rollback,
+            force,
+        } => self_update::run(check, rollback, force)?,
         Commands::Clean { dry_run } => {
             let store = Store::open(Config::load(&path)?, false)?;
             let report = store.collect(&GcOptions {

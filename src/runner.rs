@@ -1,5 +1,5 @@
 use crate::{
-    Result,
+    Result, cargo,
     config::Config,
     fail,
     process::OwnedChild,
@@ -12,7 +12,7 @@ use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    process::{Command, ExitStatus},
+    process::ExitStatus,
     sync::atomic::{AtomicBool, Ordering},
     thread,
     time::{Duration, Instant},
@@ -79,7 +79,7 @@ pub fn validate_cargo_args(args: &[OsString]) -> Result<()> {
 
 pub fn locate_workspace(cargo: &Path, args: &[OsString]) -> Result<PathBuf> {
     let (tc, rest) = toolchain(args);
-    let mut command = Command::new(cargo);
+    let mut command = crate::cargo::command(cargo)?;
     command
         .args(tc)
         .args(["locate-project", "--workspace", "--message-format", "plain"]);
@@ -112,19 +112,12 @@ pub fn locate_workspace(cargo: &Path, args: &[OsString]) -> Result<PathBuf> {
 }
 
 fn check_version(cargo: &Path, tc: &[OsString]) -> Result<()> {
-    let output = Command::new(cargo).args(tc).arg("--version").output()?;
+    let output = crate::cargo::command(cargo)?
+        .args(tc)
+        .arg("--version")
+        .output()?;
     let text = String::from_utf8_lossy(&output.stdout);
-    let version = text.split_whitespace().nth(1).unwrap_or("");
-    let mut components = version.split('.');
-    let major = components
-        .next()
-        .and_then(|s| s.parse::<u32>().ok())
-        .unwrap_or(0);
-    let minor = components
-        .next()
-        .and_then(|s| s.parse::<u32>().ok())
-        .unwrap_or(0);
-    if !output.status.success() || (major, minor) < (1, 91) {
+    if !output.status.success() || crate::cargo::version_number(&text).is_none_or(|v| v < (1, 91)) {
         return fail("Managed build-dir requires Cargo >= 1.91");
     }
     Ok(())
@@ -196,43 +189,43 @@ fn automatic_gc(store: &Store, config_path: &Path, options: &GcOptions) -> Optio
     }
 }
 
-fn resolve_cargo(program: &Path) -> Result<PathBuf> {
-    let mut candidates = if program.components().count() > 1 || program.is_absolute() {
-        vec![absolute(program)?]
-    } else {
-        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-            .map(|dir| dir.join(program))
-            .collect::<Vec<_>>()
-    };
-    #[cfg(windows)]
-    {
-        let executable = candidates
-            .iter()
-            .filter(|p| p.extension().is_none())
-            .map(|p| p.with_extension("exe"))
-            .collect::<Vec<_>>();
-        candidates.extend(executable);
+fn version_request(args: &[OsString]) -> bool {
+    let mut args = before_separator(args).iter();
+    while let Some(arg) = args.next() {
+        let text = arg.to_string_lossy();
+        if text == "--version"
+            || text == "-V"
+            || text == "version"
+            || (text.starts_with('-')
+                && !text.starts_with("--")
+                && text.contains('V')
+                && text[1..].chars().all(|c| matches!(c, 'v' | 'V' | 'q')))
+        {
+            return true;
+        }
+        if matches!(text.as_ref(), "--color" | "--config" | "-Z" | "-C") {
+            args.next();
+        } else if !text.starts_with('-') {
+            return false;
+        }
     }
-    let found = candidates
-        .drain(..)
-        .find(|p| p.is_file())
-        .ok_or("Cargo executable not found")?;
-    if fs::canonicalize(&found)? == fs::canonicalize(std::env::current_exe()?)? {
-        return fail("The configured Cargo executable points back to cargoc");
-    }
-    Ok(found)
+    false
 }
 
 pub fn run(mut config: Config, config_path: &Path, args: &[OsString]) -> Result<i32> {
     if args.is_empty() {
         return fail("Missing Cargo arguments");
     }
-    config.cargo = resolve_cargo(&config.cargo)?;
+    config.cargo = cargo::resolve(&config.cargo, None)?;
     let (tc, rest) = toolchain(args);
+    if version_request(rest) {
+        let status = cargo::command(&config.cargo)?.args(args).status()?;
+        if status.success() {
+            println!("cargoc {}", env!("CARGO_PKG_VERSION"));
+        }
+        return Ok(exit_code(status));
+    }
     let passthrough = [
-        "--version",
-        "-V",
-        "-vV",
         "--help",
         "-h",
         "version",
@@ -260,7 +253,9 @@ pub fn run(mut config: Config, config_path: &Path, args: &[OsString]) -> Result<
         .is_some_and(|s| passthrough.contains(&s))
     {
         eprintln!("cargoc: passthrough (this command does not use the managed cache)");
-        return Ok(exit_code(Command::new(&config.cargo).args(args).status()?));
+        return Ok(exit_code(
+            cargo::command(&config.cargo)?.args(args).status()?,
+        ));
     }
     validate_cargo_args(args)?;
     check_version(&config.cargo, tc)?;
@@ -284,7 +279,7 @@ pub fn run(mut config: Config, config_path: &Path, args: &[OsString]) -> Result<
             .ok_or("Cache path must be valid UTF-8 for Cargo config")?
             .to_owned();
         let build_config = format!("build.build-dir={}", toml::Value::String(path_text));
-        let mut command = Command::new(&config.cargo);
+        let mut command = cargo::command(&config.cargo)?;
         command
             .args(tc)
             .arg("--config")

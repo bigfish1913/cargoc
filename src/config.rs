@@ -31,13 +31,54 @@ pub fn default_config_path() -> PathBuf {
     if let Some(path) = env::var_os("CARGOC_CONFIG") {
         return path.into();
     }
+    cargo_home().join("cargoc.toml")
+}
+
+pub fn cargo_home() -> PathBuf {
+    env::var_os("CARGO_HOME")
+        .filter(|path| !path.is_empty())
+        .map_or_else(|| home().join(".cargo"), PathBuf::from)
+}
+
+/// Location used by cargoc 0.1.0; retained for one-time migration.
+pub fn legacy_config_path() -> PathBuf {
     let base = env::var_os(if cfg!(windows) {
         "APPDATA"
     } else {
         "XDG_CONFIG_HOME"
     })
     .map_or_else(|| home().join(".config"), PathBuf::from);
-    base.join("cargoc/config.toml")
+    base.join("cargoc").join("config.toml")
+}
+
+/// Copy validated legacy settings, retaining the original as a recovery copy.
+/// Existing/new explicit configurations are never overwritten or merged.
+pub fn migrate_legacy_config(destination: &Path, legacy: &Path) -> Result<bool> {
+    if destination.exists() || !legacy.is_file() {
+        return Ok(false);
+    }
+    let config = Config::load(legacy)?;
+    if crate::util::same_or_descendant(destination, &config.cache_dir)? {
+        return fail("Config must be outside the disposable cache root");
+    }
+    crate::util::check_path(destination)?;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_nanos();
+    let stage = destination.with_file_name(format!(
+        ".cargoc-migrate-{}-{nonce}.toml",
+        std::process::id()
+    ));
+    config.save(&stage)?;
+    // Creating a hard link publishes the complete file without replacing a
+    // config concurrently created by another invocation. Both paths share a disk.
+    let result = match fs::hard_link(&stage, destination) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => Err(error.into()),
+    };
+    let _ = fs::remove_file(&stage);
+    result
 }
 
 impl Default for Config {

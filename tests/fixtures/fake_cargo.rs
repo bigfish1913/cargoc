@@ -2,7 +2,19 @@
 use std::{env, fs, path::PathBuf, process, thread, time::Duration};
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
-    if args.iter().any(|s| s == "--version") { println!("cargo 1.99.0 (test)"); return; }
+    if args.iter().any(|s| s == "--version" || s == "-V" || s == "version" || (s.starts_with('-') && !s.starts_with("--") && s.contains('V'))) {
+        if env::var("FAKE_MODE").as_deref() == Ok("version-fail") { eprintln!("native version failure"); process::exit(7); }
+        if env::var("FAKE_MODE").as_deref() == Ok("not-cargo") { println!("other 1.99.0"); return; }
+        if env::var_os("FAKE_REQUIRE_CARGO_NAME").is_some()
+            && PathBuf::from(env::args_os().next().unwrap()).file_stem().unwrap() != "cargo" {
+            println!("rustup 1.99.0"); return;
+        }
+        if let Some(path) = env::var_os("FAKE_VERSION_ARGUMENTS") { fs::write(path, format!("{args:?}")).unwrap(); }
+        if let Some(path) = env::var_os("FAKE_VERSION_EXECUTABLE") { fs::write(path, env::args().next().unwrap()).unwrap(); }
+        println!("cargo 1.99.0 (test)");
+        if args.iter().any(|s| s == "--verbose" || s.starts_with("-v") || s == "-Vv") { println!("release: 1.99.0\nlibgit2: test"); }
+        return;
+    }
     if args.iter().any(|s| s == "locate-project") {
         println!("{}", env::var("FAKE_MANIFEST").unwrap()); return;
     }
