@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Rust stable (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    env:
+      CARGO_TERM_COLOR: always
+      # Separate per-job local outputs; do not use the native cargoc wrapper.
+      CARGO_TARGET_DIR: ${{ runner.temp }}/cargoc-target-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.os }}
+      CARGO_BUILD_BUILD_DIR: ${{ runner.temp }}/cargoc-build-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.os }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --locked
+
+  msrv:
+    name: Rust 1.88 MSRV
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_DIR: ${{ runner.temp }}/cargoc-msrv
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Install MSRV
+        uses: dtolnay/rust-toolchain@1.88.0
+      - name: Check all targets on MSRV
+        run: cargo check --locked --all-targets

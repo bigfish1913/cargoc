@@ -1,0 +1,16 @@
+# Local Cargo outputs (keep Cargo.lock tracked for this CLI).
+/target/
+/build/
+
+# Local configuration from README examples.
+/cargoc-local.toml
+/events.jsonl
+/events.previous.jsonl
+
+# Editor and operating-system files.
+/.idea/
+/.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
