@@ -453,6 +453,7 @@ where
         "fmt",
         "new",
         "init",
+        "clean",
         "uninstall",
         "search",
         "info",

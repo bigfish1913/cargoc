@@ -97,7 +97,7 @@ cargo install --path . --locked
 
 `--locked` uses the committed `Cargo.lock` for reproducible dependency versions.
 
-> **Version note:** **0.1.3** adds a native Windows `cargo.exe` proxy, managed `cargo install` caches, and read-only external-cache auditing. It retains 0.1.2's installer/package-manager channels and source-aware update notices, plus 0.1.1's Cargo-home configuration, migration, dual-version output, and self-update. After upgrading, run `cargoc setup --enable` again to create the native proxy. crates.io remains a separate publication: its **0.1.0** release uses the legacy configuration locations listed in the migration section. Use a completed GitHub Release or install from source for these features.
+> **Version note:** **0.1.4** adds user-selected cleanup of legacy external Cargo `build-dir` settings, safe Cargo-config backups, and native `cargo clean` passthrough under low disk space. It retains 0.1.3's native Windows `cargo.exe` proxy, managed `cargo install` caches, and read-only external-cache auditing, plus the earlier installer/package-manager channels, Cargo-home configuration, migration, dual-version output, and self-update. After upgrading, run `cargoc setup --enable` again to refresh the native proxy. crates.io remains a separate publication: its **0.1.0** release uses the legacy configuration locations listed in the migration section. Use a completed GitHub Release or install from source for these features.
 
 To choose a dedicated root, use this **instead of** the default `init` above:
 
@@ -109,7 +109,7 @@ cargoc init --cache-dir D:/BuildCache/cargoc
 
 ## Guided setup and optional default Cargo integration
 
-The default configuration is `$CARGO_HOME/cargoc.toml`, or `~/.cargo/cargoc.toml` if `CARGO_HOME` is unset. It sits beside Cargo's own `config.toml` without changing it. Use `CARGOC_CONFIG` or the global `--cargoc-config PATH` option to select another file.
+The default configuration is `$CARGO_HOME/cargoc.toml`, or `~/.cargo/cargoc.toml` if `CARGO_HOME` is unset. It sits beside Cargo's own `config.toml`; setup leaves Cargo's file unchanged unless you explicitly choose to remove a detected external dynamic `build-dir`. Use `CARGOC_CONFIG` or the global `--cargoc-config PATH` option to select another file.
 
 For a first-time guided setup, run:
 
@@ -132,6 +132,15 @@ cargoc setup --enable
 cargoc setup --status
 cargoc setup --disable
 ```
+
+If setup finds a global Cargo setting such as `build-dir = "D:/BuildCache/cargo/{workspace-path-hash}"`, interactive setup asks whether to remove it. The original Cargo configuration is backed up before removal. Non-interactive setup requires an explicit choice when this setting is detected (`--yes` keeps it for compatibility); choose explicitly with:
+
+```powershell
+cargoc setup --enable --legacy-build-dir keep
+cargoc setup --enable --legacy-build-dir remove
+```
+
+Only an absolute dynamic build directory outside cargoc's managed cache is eligible. Other Cargo settings and unrelated static build directories are left unchanged.
 
 The example above sets a **100 GiB** budget and an **80 GiB** pressure-cleanup target with the default `low_water_ratio = 0.8`. The built-in budget remains **80 GiB** unless you change it.
 
@@ -193,7 +202,7 @@ cargoc exec init new-project
 
 `cargoc exec clean` invokes **native Cargo clean**, which can delete final outputs from Cargo's selected target directory as well as the selected intermediates. Use it deliberately. `exec` escapes command-name collisions; it does not generally disable management.
 
-Some commands, including Cargo `fmt`, `new`, `init`, `metadata`, `fetch`, and `update`, are direct passthroughs and print a notice that they do not use the managed cache. A cargoc configuration is still required. Managed commands reject `--build-dir`, Cargo `--config` overrides of `build.build-dir`, and Cargo `-C`; change directories or use `--manifest-path` instead.
+Some commands, including Cargo `clean`, `fmt`, `new`, `init`, `metadata`, `fetch`, and `update`, are direct passthroughs and print a notice that they do not use the managed cache. A cargoc configuration is still required. Managed commands reject `--build-dir`, Cargo `--config` overrides of `build.build-dir`, and Cargo `-C`; change directories or use `--manifest-path` instead.
 
 Registry, git, and `--path` installations through `cargoc install` / `cargoc exec install` now use managed intermediate caches without requiring a workspace in the current directory. `install --list`, `install --help`, and `help install` remain passthroughs. Installs share the build lifecycle's leases, budget, disk monitoring, and cleanup. Identity includes the Cargo version, explicit toolchain, and complete arguments (local source paths normalized); only digests are stored, not URL credentials in state or cargoc logs. Identical concurrent installs are refused; different arguments may select different caches. Cargo's own output may still include source URLs.
 
@@ -260,7 +269,7 @@ cargoc writes its **own** TOML configuration, never your global Cargo configurat
 - Windows default: `%USERPROFILE%/.cargo/cargoc.toml`.
 - Linux/macOS default: `~/.cargo/cargoc.toml`.
 
-Cargo's `config.toml` remains separate and is never edited. If the new default is missing, cargoc copies validated legacy settings from `%APPDATA%/cargoc/config.toml` (Windows) or `$XDG_CONFIG_HOME/cargoc/config.toml` / `~/.config/cargoc/config.toml` (Linux/macOS), retaining the old file as a recovery copy. Existing new configs are never overwritten. Explicit `--cargoc-config` / `CARGOC_CONFIG` selections do not migrate. If default Cargo integration was enabled with the old path, run `cargoc setup --enable` once to refresh its pinned config path; cache directories and thresholds remain unchanged.
+Cargo's `config.toml` remains separate by default; setup edits it only when the user explicitly chooses to remove an external dynamic `build-dir`, and keeps a backup first. If the new default is missing, cargoc copies validated legacy settings from `%APPDATA%/cargoc/config.toml` (Windows) or `$XDG_CONFIG_HOME/cargoc/config.toml` / `~/.config/cargoc/config.toml` (Linux/macOS), retaining the old file as a recovery copy. Existing new configs are never overwritten. Explicit `--cargoc-config` / `CARGOC_CONFIG` selections do not migrate. If default Cargo integration was enabled with the old path, run `cargoc setup --enable` once to refresh its pinned config path; cache directories and thresholds remain unchanged.
 
 ```sh
 cargoc --cargoc-config ./cargoc-local.toml init --cache-dir D:/BuildCache/cargoc

@@ -1,6 +1,9 @@
 use cargoc::{
     Result,
-    config::{Config, default_config_path, legacy_config_path, migrate_legacy_config},
+    config::{
+        Config, cargo_config_path, default_config_path, legacy_build_dir, legacy_config_path,
+        migrate_legacy_config, remove_legacy_build_dir,
+    },
     fail,
     installation::InstallSource,
     integration, runner, self_update,
@@ -8,7 +11,7 @@ use cargoc::{
     updates,
     util::{GIB, absolute, same_or_descendant},
 };
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde_json::json;
 use std::{ffi::OsString, path::PathBuf};
 
@@ -50,6 +53,9 @@ enum Commands {
         /// In setup mode, answer yes to enabling the shim
         #[arg(long)]
         yes: bool,
+        /// Keep or remove a detected external Cargo build-dir
+        #[arg(long, value_enum, conflicts_with_all = ["disable", "status"])]
+        legacy_build_dir: Option<LegacyBuildDirAction>,
     },
     /// Display or update user configuration
     Config(Settings),
@@ -88,6 +94,12 @@ enum Commands {
     /// Any other command is forwarded to Cargo (e.g. build, check, test, run)
     #[command(external_subcommand)]
     Cargo(Vec<OsString>),
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum LegacyBuildDirAction {
+    Keep,
+    Remove,
 }
 
 #[derive(Args, Default)]
@@ -176,6 +188,45 @@ fn interactive_enable() -> Result<bool> {
     ))
 }
 
+fn choose_legacy_build_dir(
+    action: Option<LegacyBuildDirAction>,
+    yes: bool,
+    cache_dir: &std::path::Path,
+) -> Result<bool> {
+    let path = cargo_config_path();
+    let Some(value) = legacy_build_dir(&path, cache_dir)? else {
+        return Ok(false);
+    };
+    match action {
+        Some(LegacyBuildDirAction::Remove) => Ok(true),
+        Some(LegacyBuildDirAction::Keep) => Ok(false),
+        None if yes => {
+            eprintln!(
+                "cargoc: keeping external Cargo build-dir (use --legacy-build-dir remove to remove it): {value}"
+            );
+            Ok(false)
+        }
+        None => {
+            use std::io::{self, IsTerminal, Write};
+            if !io::stdin().is_terminal() {
+                return fail(
+                    "External Cargo build-dir detected; choose --legacy-build-dir keep or remove",
+                );
+            }
+            print!(
+                "External Cargo build-dir detected at {value}. Remove it after backing up the Cargo config? [y/N] "
+            );
+            io::stdout().flush()?;
+            let mut answer = String::new();
+            io::stdin().read_line(&mut answer)?;
+            Ok(matches!(
+                answer.trim().to_ascii_lowercase().as_str(),
+                "y" | "yes"
+            ))
+        }
+    }
+}
+
 fn setup(
     path: &std::path::Path,
     values: Settings,
@@ -183,6 +234,7 @@ fn setup(
     disable: bool,
     status: bool,
     yes: bool,
+    legacy_action: Option<LegacyBuildDirAction>,
 ) -> Result<()> {
     if status {
         return integration::status();
@@ -206,7 +258,19 @@ fn setup(
         interactive_enable()?
     };
     if should_enable {
-        integration::enable(config, path, explicit_cargo)
+        let cache_dir = config.cache_dir.clone();
+        let remove_legacy = choose_legacy_build_dir(legacy_action, yes, &cache_dir)?;
+        integration::enable(config, path, explicit_cargo)?;
+        if remove_legacy {
+            let cargo_config = cargo_config_path();
+            if let Some(backup) = remove_legacy_build_dir(&cargo_config, &cache_dir)? {
+                println!(
+                    "Removed external Cargo build-dir; original config backed up at {}",
+                    backup.display()
+                );
+            }
+        }
+        Ok(())
     } else {
         Store::open(config.clone(), true)?;
         config.save(path)?;
@@ -263,7 +327,16 @@ fn execute(cli: Cli) -> Result<i32> {
             disable,
             status,
             yes,
-        } => setup(&path, settings, enable, disable, status, yes)?,
+            legacy_build_dir,
+        } => setup(
+            &path,
+            settings,
+            enable,
+            disable,
+            status,
+            yes,
+            legacy_build_dir,
+        )?,
         Commands::Config(values) => settings(&path, values, false)?,
         Commands::Status { json: machine } => {
             let store = Store::open(Config::load(&path)?, false)?;

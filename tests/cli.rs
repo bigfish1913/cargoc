@@ -431,6 +431,21 @@ fn maintenance_failure_does_not_overwrite_cargo_exit_code() {
 }
 
 #[test]
+fn cargo_clean_is_passthrough_even_when_managed_builds_are_blocked_for_space() {
+    let f = Fixture::new();
+    let mut config = Config::load(&f.config).unwrap();
+    config.min_free_gib = u64::MAX as f64 / cargoc::util::GIB / 2.0;
+    config.abort_free_gib = 0.0;
+    config.save(&f.config).unwrap();
+    let output = f.run(&["exec", "clean"]);
+    assert_success(&output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("passthrough"));
+    let args = fs::read_to_string(&f.arguments).unwrap();
+    assert!(args.contains("clean"));
+    assert!(!f.cache_file().exists());
+}
+
+#[test]
 fn low_space_refuses_to_launch_without_filling_disk() {
     let f = Fixture::new();
     let mut cfg = Config::load(&f.config).unwrap();

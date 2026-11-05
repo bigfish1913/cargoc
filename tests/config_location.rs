@@ -1,4 +1,4 @@
-use cargoc::config::{Config, migrate_legacy_config};
+use cargoc::config::{Config, legacy_build_dir, migrate_legacy_config, remove_legacy_build_dir};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -122,6 +122,78 @@ fn legacy_config_migrates_without_changing_original_or_cargo_settings() {
         fs::read_to_string(cargo_config).unwrap(),
         "# Do not modify\n"
     );
+}
+
+#[test]
+fn setup_can_detect_and_remove_only_external_dynamic_build_dir_with_backup() {
+    let temp = temp();
+    let cargo_config = temp.path().join("cargo/config.toml");
+    let managed = temp.path().join("managed");
+    let external = format!(
+        "{}{sep}{{workspace-path-hash}}",
+        temp.path().join("external").display(),
+        sep = std::path::MAIN_SEPARATOR
+    );
+    fs::create_dir_all(cargo_config.parent().unwrap()).unwrap();
+    let original = format!(
+        "# preserve this comment\n[net]\ngit-fetch-with-cli = true\n\n[build]\nbuild-dir = {}\ntarget-dir = \"D:/BuildTargets\"\n",
+        toml::Value::String(external.clone())
+    );
+    fs::write(&cargo_config, &original).unwrap();
+    assert_eq!(
+        legacy_build_dir(&cargo_config, &managed)
+            .unwrap()
+            .as_deref(),
+        Some(external.as_str())
+    );
+    let backup = remove_legacy_build_dir(&cargo_config, &managed)
+        .unwrap()
+        .unwrap();
+    assert_eq!(fs::read_to_string(&backup).unwrap(), original);
+    let updated = fs::read_to_string(&cargo_config).unwrap();
+    assert!(!updated.contains("build-dir"));
+    assert!(updated.contains("git-fetch-with-cli = true"));
+    assert!(updated.contains("target-dir = \"D:/BuildTargets\""));
+    assert!(legacy_build_dir(&cargo_config, &managed).unwrap().is_none());
+}
+
+#[test]
+fn setup_keeps_managed_or_static_build_dir_and_invalid_config() {
+    let temp = temp();
+    let managed = temp.path().join("managed");
+    let managed_config = temp.path().join("managed.toml");
+    let managed_build_dir = format!(
+        "{}{}{{workspace-path-hash}}",
+        managed.display(),
+        std::path::MAIN_SEPARATOR
+    );
+    fs::write(
+        &managed_config,
+        format!(
+            "[build]\nbuild-dir = {}\n",
+            toml::Value::String(managed_build_dir)
+        ),
+    )
+    .unwrap();
+    assert!(
+        legacy_build_dir(&managed_config, &managed)
+            .unwrap()
+            .is_none()
+    );
+    let static_config = temp.path().join("static.toml");
+    fs::write(
+        &static_config,
+        "[build]\nbuild-dir = 'D:/BuildCache/static'\n",
+    )
+    .unwrap();
+    assert!(
+        legacy_build_dir(&static_config, &managed)
+            .unwrap()
+            .is_none()
+    );
+    let invalid = temp.path().join("invalid.toml");
+    fs::write(&invalid, "[build\n").unwrap();
+    assert!(legacy_build_dir(&invalid, &managed).is_err());
 }
 
 #[test]

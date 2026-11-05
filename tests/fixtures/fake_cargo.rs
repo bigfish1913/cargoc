@@ -18,6 +18,12 @@ fn main() {
     if args.iter().any(|s| s == "locate-project") {
         println!("{}", env::var("FAKE_MANIFEST").unwrap()); return;
     }
+    if args.iter().any(|s| s == "clean") {
+        if let Some(path) = env::var_os("FAKE_ARGUMENTS") {
+            fs::write(path, format!("{args:?}")).unwrap();
+        }
+        return;
+    }
     let workspace = PathBuf::from(env::var_os("FAKE_WORKSPACE").unwrap());
     let dir = PathBuf::from(env::var_os("CARGO_BUILD_BUILD_DIR").unwrap());
     fs::create_dir_all(dir.join("debug/deps")).unwrap();

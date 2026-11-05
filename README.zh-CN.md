@@ -97,7 +97,7 @@ cargo install --path . --locked
 
 `--locked` 使用已提交的 `Cargo.lock`，固定依赖版本。
 
-> **版本说明：** **0.1.3** 新增 Windows 原生 `cargo.exe` 代理、受管理的 `cargo install` 缓存与非托管旧缓存只读审计；保留 0.1.2 的安装器／包管理器渠道、按安装来源区分的更新提示，以及 0.1.1 的 Cargo 同目录配置、迁移、双版本输出和自更新。升级后需再次运行 `cargoc setup --enable` 补上原生代理。crates.io 是独立发布渠道，其 **0.1.0** 仍使用迁移说明中列出的旧配置位置。需要这些新功能时，请使用已完成的 GitHub Release 或从源码安装。
+> **版本说明：** **0.1.4** 新增可由用户选择的旧版外部 Cargo `build-dir` 配置清理、Cargo 配置备份，以及低磁盘时的原生 `cargo clean` 透传；保留 0.1.3 的 Windows 原生 `cargo.exe` 代理、受管理的 `cargo install` 缓存和非托管旧缓存只读审计，以及更早版本的安装器／包管理器渠道、Cargo 同目录配置、迁移、双版本输出和自更新。升级后需再次运行 `cargoc setup --enable` 刷新原生代理。crates.io 是独立发布渠道，其 **0.1.0** 仍使用迁移说明中列出的旧配置位置。需要这些新功能时，请使用已完成的 GitHub Release 或从源码安装。
 
 如需专用缓存根目录，用下面的命令**替代**上面的默认 `init`：
 
@@ -109,7 +109,7 @@ cargoc init --cache-dir D:/BuildCache/cargoc
 
 ## 一次引导配置与默认 Cargo 接管
 
-配置文件默认位于 `$CARGO_HOME/cargoc.toml`，未设置 `CARGO_HOME` 时为 `~/.cargo/cargoc.toml`。与 Cargo 自己的 `config.toml` 同目录，但使用独立文件，不修改 Cargo 配置。也可以通过 `CARGOC_CONFIG` 或全局参数 `--cargoc-config PATH` 指定。
+配置文件默认位于 `$CARGO_HOME/cargoc.toml`，未设置 `CARGO_HOME` 时为 `~/.cargo/cargoc.toml`。它与 Cargo 自己的 `config.toml` 同目录；除非用户明确选择移除检测到的外部动态 `build-dir`，否则 setup 不修改 Cargo 配置。也可以通过 `CARGOC_CONFIG` 或全局参数 `--cargoc-config PATH` 指定。
 
 推荐首次使用直接运行：
 
@@ -132,6 +132,21 @@ cargoc setup --enable
 cargoc setup --status
 cargoc setup --disable
 ```
+
+如果 setup 检测到类似下面的全局 Cargo 配置：
+
+```toml
+build-dir = "D:/BuildCache/cargo/{workspace-path-hash}"
+```
+
+交互式 setup 会询问是否移除。移除前会备份原 Cargo 配置。检测到该配置时，非交互式 setup 需要明确选择（`--yes` 为兼容性保留）；可显式选择：
+
+```powershell
+cargoc setup --enable --legacy-build-dir keep
+cargoc setup --enable --legacy-build-dir remove
+```
+
+只有位于 cargoc 管理缓存之外的绝对动态构建目录才会被列为可移除对象；其他 Cargo 配置和无动态占位符的静态 `build-dir` 不会修改。
 
 上例将预算设为 **100 GiB**，使用默认 `low_water_ratio = 0.8` 时，压力清理目标为 **80 GiB**。程序内置的默认预算仍为 **80 GiB**，不会自动改成 100 GiB。
 
@@ -193,7 +208,7 @@ cargoc exec init new-project
 
 `cargoc exec clean` 执行 **Cargo 原生 clean**，可能删除 Cargo 所选目标目录中的最终产物及选定的中间缓存，请谨慎使用。`exec` 消除命令名冲突，不是通用的“关闭管理”开关。
 
-部分命令（例如 Cargo `fmt`、`new`、`init`、`metadata`、`fetch`、`update`）直接透传，并提示不使用受管理缓存，但仍需要 cargoc 配置。受管理命令拒绝 `--build-dir`、通过 Cargo `--config` 覆盖 `build.build-dir`，以及 Cargo `-C`；请切换工作目录或使用 `--manifest-path`。
+部分命令（例如 Cargo `clean`、`fmt`、`new`、`init`、`metadata`、`fetch`、`update`）直接透传，并提示不使用受管理缓存，但仍需要 cargoc 配置。受管理命令拒绝 `--build-dir`、通过 Cargo `--config` 覆盖 `build.build-dir`，以及 Cargo `-C`；请切换工作目录或使用 `--manifest-path`。
 
 `cargoc install`／`cargoc exec install` 的 registry、git 和 `--path` 安装现在使用受管理中间缓存，无需在当前目录存在工作区。`install --list`、`install --help` 和 `help install` 仍直接透传。安装缓存与构建共用租约、预算、空间监测及清理规则；缓存身份包含 Cargo 版本、显式工具链和完整参数（本地源路径规范化），只保存摘要，不把 URL 凭据写入状态或 cargoc 日志。同一身份的并发安装会被拒绝；参数不同可能生成不同缓存。Cargo 自己的输出仍可能包含源地址。
 
@@ -260,7 +275,7 @@ cargoc 只写入**自己的** TOML 配置，不修改全局 Cargo 配置。`--ca
 - Windows 默认：`%USERPROFILE%/.cargo/cargoc.toml`。
 - Linux/macOS 默认：`~/.cargo/cargoc.toml`。
 
-Cargo 自己的 `config.toml` 保持独立，绝不修改。新默认文件不存在时，会从旧位置 `%APPDATA%/cargoc/config.toml`（Windows）或 `$XDG_CONFIG_HOME/cargoc/config.toml` / `~/.config/cargoc/config.toml`（Linux/macOS）复制经过校验的配置，保留原文件作为恢复副本，不覆盖已有的新配置。显式指定 `--cargoc-config` / `CARGOC_CONFIG` 时不迁移。此前已启用默认 Cargo 接管的用户，运行一次 `cargoc setup --enable`，即可刷新入口固定的配置路径；缓存目录、阈值不会改变。
+Cargo 自己的 `config.toml` 默认保持独立；只有 setup 中用户明确选择移除外部动态 `build-dir` 时才会修改，并会先留下备份。新默认文件不存在时，会从旧位置 `%APPDATA%/cargoc/config.toml`（Windows）或 `$XDG_CONFIG_HOME/cargoc/config.toml` / `~/.config/cargoc/config.toml`（Linux/macOS）复制经过校验的配置，保留原文件作为恢复副本，不覆盖已有的新配置。显式指定 `--cargoc-config` / `CARGOC_CONFIG` 时不迁移。此前已启用默认 Cargo 接管的用户，运行一次 `cargoc setup --enable`，即可刷新入口固定的配置路径；缓存目录、阈值不会改变。
 
 ```sh
 cargoc --cargoc-config ./cargoc-local.toml init --cache-dir D:/BuildCache/cargoc

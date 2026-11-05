@@ -1,6 +1,6 @@
 use crate::{
     Result, fail,
-    util::{absolute, atomic_write, identity_path},
+    util::{absolute, atomic_write, identity_path, same_or_descendant},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -38,6 +38,109 @@ pub fn cargo_home() -> PathBuf {
     env::var_os("CARGO_HOME")
         .filter(|path| !path.is_empty())
         .map_or_else(|| home().join(".cargo"), PathBuf::from)
+}
+
+/// Cargo's user-level configuration file, preferring the modern name.
+pub fn cargo_config_path() -> PathBuf {
+    let home = cargo_home();
+    let toml = home.join("config.toml");
+    if toml.is_file() {
+        toml
+    } else {
+        home.join("config")
+    }
+}
+
+fn legacy_build_dir_value(value: &str, cache_dir: &Path) -> Result<bool> {
+    // Only offer removal for absolute workspace-hash build directories. A
+    // user's unrelated static build-dir is not silently classified as legacy.
+    if !Path::new(value).is_absolute() || !value.contains("{workspace-path-hash}") {
+        return Ok(false);
+    }
+    let Some(base) = value
+        .strip_suffix("/{workspace-path-hash}")
+        .or_else(|| value.strip_suffix("\\{workspace-path-hash}"))
+    else {
+        return Ok(false);
+    };
+    let overlaps = same_or_descendant(Path::new(base), cache_dir)?
+        || same_or_descendant(cache_dir, Path::new(base))?;
+    Ok(!overlaps)
+}
+
+/// Return the external dynamic build-dir that setup can offer to remove.
+pub fn legacy_build_dir(path: &Path, cache_dir: &Path) -> Result<Option<String>> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let data: toml::Value = toml::from_str(&fs::read_to_string(path)?)?;
+    let Some(value) = data
+        .get("build")
+        .and_then(|section| section.get("build-dir"))
+        .and_then(toml::Value::as_str)
+    else {
+        return Ok(None);
+    };
+    if legacy_build_dir_value(value, cache_dir)? {
+        Ok(Some(value.to_owned()))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Remove only a detected legacy dynamic build-dir after creating a backup.
+/// Other Cargo settings, comments and line endings are preserved.
+pub fn remove_legacy_build_dir(path: &Path, cache_dir: &Path) -> Result<Option<PathBuf>> {
+    let Some(expected) = legacy_build_dir(path, cache_dir)? else {
+        return Ok(None);
+    };
+    let source = fs::read_to_string(path)?;
+    let mut output = String::with_capacity(source.len());
+    let mut in_build = false;
+    let mut removed = false;
+    for segment in source.split_inclusive('\n') {
+        let line = segment.trim_end_matches(['\n', '\r']);
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_build = trimmed == "[build]";
+        }
+        let is_build_dir = in_build
+            && trimmed
+                .split_once('=')
+                .is_some_and(|(key, _)| key.trim() == "build-dir");
+        if is_build_dir {
+            let value = trimmed.split_once('=').map(|(_, value)| value.trim());
+            if value.is_some_and(|value| {
+                toml::from_str::<toml::Value>(&format!("build-dir = {value}"))
+                    .ok()
+                    .and_then(|data| {
+                        data.get("build-dir")
+                            .and_then(toml::Value::as_str)
+                            .map(str::to_owned)
+                    })
+                    .is_some_and(|value| value == expected)
+            }) {
+                removed = true;
+                continue;
+            }
+        }
+        output.push_str(segment);
+    }
+    if !removed {
+        return fail("Legacy Cargo build-dir changed while setup was running");
+    }
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_nanos();
+    let backup = path.with_file_name(format!(
+        "{}.cargoc-backup-{nonce}",
+        path.file_name()
+            .ok_or("Cargo config has no filename")?
+            .to_string_lossy()
+    ));
+    fs::copy(path, &backup)?;
+    atomic_write(path, output.as_bytes())?;
+    Ok(Some(backup))
 }
 
 /// Location used by cargoc 0.1.0; retained for one-time migration.
