@@ -417,19 +417,24 @@ impl Store {
         report.before_bytes = total;
         let mut available = free()?;
         let cfg = &self.config;
-        let pressure =
-            total as f64 > cfg.max_cache_gib * GIB || (available as f64) < cfg.min_free_gib * GIB;
+        let capacity_pressure = total as f64 > cfg.max_cache_gib * GIB;
         let target = cfg.max_cache_gib * cfg.low_water_ratio * GIB;
         for entry in entries {
             if entry.bytes == 0 {
                 continue;
             }
             let key = entry.record.key;
-            let needed =
-                pressure && (total as f64 > target || (available as f64) < cfg.min_free_gib * GIB);
             let stale = cfg.max_age_days > 0.0
                 && now() - entry.record.last_used > cfg.max_age_days * 86400.0;
-            if !options.all_idle && !needed && !stale {
+            // A healthy disk makes the capacity limit a soft limit: evict only
+            // stale entries, otherwise alternating workspaces can churn their
+            // dependency caches at every build. Disk pressure still overrides
+            // the age floor so the safety threshold can be recovered.
+            let disk_pressure = (available as f64) < cfg.min_free_gib * GIB;
+            let eligible = disk_pressure || stale || (capacity_pressure && cfg.max_age_days == 0.0);
+            if !options.all_idle
+                && (!eligible || (!disk_pressure && capacity_pressure && total as f64 <= target))
+            {
                 continue;
             }
             if options.protected.contains(&key) {
@@ -441,7 +446,13 @@ impl Store {
                 let record = self.read_record(&key)?;
                 let stale =
                     cfg.max_age_days > 0.0 && now() - record.last_used > cfg.max_age_days * 86400.0;
-                if !options.all_idle && !needed && !stale {
+                let disk_pressure = (available as f64) < cfg.min_free_gib * GIB;
+                let eligible =
+                    disk_pressure || stale || (capacity_pressure && cfg.max_age_days == 0.0);
+                if !options.all_idle
+                    && (!eligible
+                        || (!disk_pressure && capacity_pressure && total as f64 <= target))
+                {
                     return Ok(0);
                 }
                 let path = self.root.join("workspaces").join(&key);

@@ -97,7 +97,7 @@ cargo install --path . --locked
 
 `--locked` uses the committed `Cargo.lock` for reproducible dependency versions.
 
-> **Version note:** **0.1.4** adds user-selected cleanup of legacy external Cargo `build-dir` settings, safe Cargo-config backups, and native `cargo clean` passthrough under low disk space. It retains 0.1.3's native Windows `cargo.exe` proxy, managed `cargo install` caches, and read-only external-cache auditing, plus the earlier installer/package-manager channels, Cargo-home configuration, migration, dual-version output, and self-update. After upgrading, run `cargoc setup --enable` again to refresh the native proxy. crates.io remains a separate publication: its **0.1.0** release uses the legacy configuration locations listed in the migration section. Use a completed GitHub Release or install from source for these features.
+> **Version note:** **0.1.5** avoids automatic cache thrashing at a healthy capacity boundary by retaining recent caches, protecting the current workspace, and reserving aggressive eviction for disk pressure. It retains 0.1.4's user-selected cleanup of legacy external Cargo `build-dir` settings, safe Cargo-config backups, and native `cargo clean` passthrough, plus the earlier native Windows proxy, managed install caches, and read-only external-cache auditing. After upgrading, run `cargoc setup --enable` again to refresh the native proxy. crates.io remains a separate publication: its **0.1.0** release uses the legacy configuration locations listed in the migration section. Use a completed GitHub Release or install from source for these features.
 
 To choose a dedicated root, use this **instead of** the default `init` above:
 
@@ -299,7 +299,7 @@ The default cache base is `%LOCALAPPDATA%` on Windows and `$XDG_CACHE_HOME` on L
 ## Ownership and cleanup safety
 
 - Each workspace gets `<cache-dir>/workspaces/<SHA256>` based on its resolved absolute workspace path (case and verbatim-prefix aliases normalized on Windows). A root ownership marker (`.cargoc-root.json`) and validated workspace records identify managed data.
-- Automatic cleanup removes oldest-last-used idle caches when they expire or when the managed budget/free-space thresholds trigger pressure. Under pressure it aims for the low-water target and desired free space, as far as safe candidates permit.
+- Automatic cleanup removes oldest-last-used idle caches when they expire or when the managed budget/free-space thresholds trigger pressure. A healthy-disk budget overage is a soft limit: recent caches are retained to prevent rebuild churn, while stale caches are reclaimed toward the low-water target. Disk pressure overrides the age floor; the current workspace is protected before and after its build.
 - Workspace leases, a collector lock, and Cargo native locks protect active caches. Concurrent cargoc builds of the same workspace are refused rather than sharing a writable managed cache. Locked candidates are skipped.
 - Manual `clean` considers all idle managed caches, even with `auto_clean = false`; it does not clean unknown contents. Some lock files/directories may remain after cleanup.
 - Changing `cache_dir` does **not** migrate or delete the old root. Existing non-cargoc caches remain untouched and are not counted toward the managed budget. Never add ownership markers by hand to adopt an old cache.

@@ -512,7 +512,14 @@ where
         json!({"workspace": workspace})
     };
     if config.auto_clean {
-        automatic_gc(&store, config_path, &GcOptions::default());
+        automatic_gc(
+            &store,
+            config_path,
+            &GcOptions {
+                protected: [key.clone()].into(),
+                ..GcOptions::default()
+            },
+        );
     }
     let result;
     {

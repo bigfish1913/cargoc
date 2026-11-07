@@ -457,10 +457,11 @@ fn low_space_refuses_to_launch_without_filling_disk() {
 }
 
 #[test]
-fn running_build_is_protected_then_its_oversize_cache_is_collected_after_exit() {
+fn running_build_is_protected_and_recent_cache_is_retained_after_exit() {
     let f = Fixture::new();
     let mut cfg = Config::load(&f.config).unwrap();
     cfg.max_cache_gib = 0.000_001;
+    cfg.max_age_days = 7.0;
     cfg.save(&f.config).unwrap();
     let child = f
         .command()
@@ -486,7 +487,7 @@ fn running_build_is_protected_then_its_oversize_cache_is_collected_after_exit() 
     assert!(f.cache_file().is_file());
     let output = child.wait_with_output().unwrap();
     assert_success(&output); // Fake compiler fails if its live cache disappears.
-    assert!(!f.cache_file().exists());
+    assert!(f.cache_file().is_file());
     assert!(f.workspace.join("target/debug/demo.exe").is_file());
 }
 

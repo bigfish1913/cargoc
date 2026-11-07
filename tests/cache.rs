@@ -90,6 +90,7 @@ fn pressure_collects_lru_until_low_water_mark() {
     let temp = temp();
     let mut cfg = config(temp.path());
     cfg.max_cache_gib = 9000.0 / GIB;
+    cfg.max_age_days = 0.0001;
     let store = Store::open(cfg, true).unwrap();
     let (a, pa) = add(&store, temp.path(), "oldest", 4096, 30.0);
     let (b, pb) = add(&store, temp.path(), "middle", 4096, 20.0);
@@ -104,6 +105,40 @@ fn pressure_collects_lru_until_low_water_mark() {
     assert!(!pa.join("debug/deps/cache.bin").exists());
     assert!(!pb.join("debug/deps/cache.bin").exists());
     assert!(pc.join("debug/deps/cache.bin").exists());
+}
+
+#[test]
+fn healthy_capacity_pressure_does_not_evict_recent_caches() {
+    let temp = temp();
+    let mut cfg = config(temp.path());
+    cfg.max_cache_gib = 7000.0 / GIB;
+    cfg.max_age_days = 7.0;
+    let store = Store::open(cfg, true).unwrap();
+    let (_, pa) = add(&store, temp.path(), "recent-a", 4096, 1.0);
+    let (_, pb) = add(&store, temp.path(), "recent-b", 4096, 2.0);
+    let report = store
+        .collect_with_free(&GcOptions::default(), || Ok(u64::MAX))
+        .unwrap();
+    assert_eq!(report.removed_bytes, 0);
+    assert!(report.unresolved);
+    assert!(pa.join("debug/deps/cache.bin").exists());
+    assert!(pb.join("debug/deps/cache.bin").exists());
+}
+
+#[test]
+fn disk_pressure_overrides_recent_cache_age() {
+    let temp = temp();
+    let mut cfg = config(temp.path());
+    cfg.max_cache_gib = 9000.0 / GIB;
+    cfg.max_age_days = 7.0;
+    cfg.min_free_gib = 1.0;
+    let store = Store::open(cfg, true).unwrap();
+    let (_, path) = add(&store, temp.path(), "recent", 4096, 1.0);
+    let report = store
+        .collect_with_free(&GcOptions::default(), || Ok(0))
+        .unwrap();
+    assert_eq!(report.removed_bytes, 4096);
+    assert!(!path.join("debug/deps/cache.bin").exists());
 }
 
 #[test]
