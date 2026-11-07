@@ -97,7 +97,7 @@ cargo install --path . --locked
 
 `--locked` uses the committed `Cargo.lock` for reproducible dependency versions.
 
-> **Version note:** **0.1.5** avoids automatic cache thrashing at a healthy capacity boundary by retaining recent caches, protecting the current workspace, and reserving aggressive eviction for disk pressure. It retains 0.1.4's user-selected cleanup of legacy external Cargo `build-dir` settings, safe Cargo-config backups, and native `cargo clean` passthrough, plus the earlier native Windows proxy, managed install caches, and read-only external-cache auditing. After upgrading, run `cargoc setup --enable` again to refresh the native proxy. crates.io remains a separate publication: its **0.1.0** release uses the legacy configuration locations listed in the migration section. Use a completed GitHub Release or install from source for these features.
+> **Version note:** **0.1.6** allows concurrent Cargo builds for one workspace, using Cargo's native lock to serialize writes while a long-running `cargo run` keeps the managed cache protected from cleanup. It retains 0.1.5's cache-churn protection, 0.1.4's selectable legacy Cargo-config cleanup, and the earlier native Windows proxy, managed install caches, and external-cache auditing. After upgrading, run `cargoc setup --enable` again to refresh the native proxy. crates.io remains a separate publication: its **0.1.0** release uses the legacy configuration locations listed in the migration section. Use a completed GitHub Release or install from source for these features.
 
 To choose a dedicated root, use this **instead of** the default `init` above:
 

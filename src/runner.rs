@@ -523,9 +523,12 @@ where
     }
     let result;
     {
-        let _lease = store
-            .lease(&key)?
-            .ok_or("Cache is busy; another cargoc invocation is using it")?;
+        let _lease = if installing {
+            store.lease(&key)?
+        } else {
+            store.shared_lease(&key)?
+        }
+        .ok_or("Cache is busy; another cargoc cleanup is using it")?;
         touch()?;
         if (free(&store)? as f64) < config.min_free_gib.max(config.abort_free_gib) * GIB {
             return fail("Insufficient free disk after safe cleanup; refusing to start Cargo");

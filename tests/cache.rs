@@ -173,6 +173,24 @@ fn dry_run_reports_but_preserves_bytes() {
 }
 
 #[test]
+fn shared_workspace_leases_allow_builds_but_block_collection() {
+    let (temp, store) = fixture();
+    let (key, path) = add(&store, temp.path(), "project", 4096, 0.0);
+    let _first = store.shared_lease(&key).unwrap().unwrap();
+    let _second = store.shared_lease(&key).unwrap().unwrap();
+    assert!(store.lease(&key).unwrap().is_none());
+    let report = store
+        .collect(&GcOptions {
+            all_idle: true,
+            ..GcOptions::default()
+        })
+        .unwrap();
+    assert_eq!(report.removed_bytes, 0);
+    assert_eq!(report.skipped.len(), 1);
+    assert!(path.join("debug/deps/cache.bin").exists());
+}
+
+#[test]
 fn wrapper_lease_blocks_collection() {
     let (temp, store) = fixture();
     let (key, path) = add(&store, temp.path(), "project", 4096, 0.0);

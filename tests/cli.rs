@@ -492,6 +492,34 @@ fn running_build_is_protected_and_recent_cache_is_retained_after_exit() {
 }
 
 #[test]
+fn concurrent_workspace_builds_share_the_cache_lease() {
+    let f = Fixture::new();
+    let mut cfg = Config::load(&f.config).unwrap();
+    cfg.auto_clean = false;
+    cfg.save(&f.config).unwrap();
+    let child = f
+        .command()
+        .arg("build")
+        .env("FAKE_MODE", "wait")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    while !f.workspace.join("started").exists() {
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "build never started"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+    let second = f.run(&["build"]);
+    assert_success(&second);
+    assert_success(&child.wait_with_output().unwrap());
+    assert!(f.cache_file().is_file());
+}
+
+#[test]
 fn recursive_cargo_configuration_is_rejected() {
     let f = Fixture::new();
     let mut cfg = Config::load(&f.config).unwrap();

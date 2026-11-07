@@ -22,6 +22,14 @@ fn empty_path(path: &Path) -> bool {
 pub struct Lease(File);
 impl Lease {
     pub fn acquire(path: &Path, create: bool) -> Result<Option<Self>> {
+        Self::acquire_with(path, create, false)
+    }
+
+    pub fn acquire_shared(path: &Path, create: bool) -> Result<Option<Self>> {
+        Self::acquire_with(path, create, true)
+    }
+
+    fn acquire_with(path: &Path, create: bool, shared: bool) -> Result<Option<Self>> {
         check_path(path)?;
         if create {
             fs::create_dir_all(path.parent().ok_or("Lock has no parent")?)?;
@@ -32,9 +40,15 @@ impl Lease {
             .create(create)
             .truncate(false)
             .open(path)?;
-        match file.try_lock_exclusive() {
-            Ok(()) => Ok(Some(Self(file))),
-            Err(_) => Ok(None),
+        let locked = if shared {
+            FileExt::try_lock_shared(&file).is_ok()
+        } else {
+            FileExt::try_lock_exclusive(&file).is_ok()
+        };
+        if locked {
+            Ok(Some(Self(file)))
+        } else {
+            Ok(None)
         }
     }
 }
@@ -272,6 +286,15 @@ impl Store {
             return fail("Invalid workspace key");
         }
         Lease::acquire(&self.root.join("locks").join(format!("{key}.lock")), true)
+    }
+
+    /// Shared workspace leases allow Cargo's native lock to serialize
+    /// concurrent builds while keeping the cache protected from collection.
+    pub fn shared_lease(&self, key: &str) -> Result<Option<Lease>> {
+        if !valid_key(key) {
+            return fail("Invalid workspace key");
+        }
+        Lease::acquire_shared(&self.root.join("locks").join(format!("{key}.lock")), true)
     }
 
     /// Caller must hold this workspace's lease.
