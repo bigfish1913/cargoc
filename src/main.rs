@@ -9,7 +9,7 @@ use cargoc::{
     integration, runner, self_update,
     store::{CacheKind, GcOptions, Store},
     updates,
-    util::{GIB, absolute, same_or_descendant},
+    util::{GIB, absolute, format_bytes, same_or_descendant},
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde_json::json;
@@ -377,7 +377,14 @@ fn execute(cli: Cli) -> Result<i32> {
                 dry_run,
                 ..GcOptions::default()
             })?;
-            println!("{}", serde_json::to_string_pretty(&report)?);
+            let mut output = serde_json::to_value(&report)?;
+            if let Some(object) = output.as_object_mut() {
+                object.insert("before".into(), json!(format_bytes(report.before_bytes)));
+                object.insert("after".into(), json!(format_bytes(report.after_bytes)));
+                object.insert("removed".into(), json!(format_bytes(report.removed_bytes)));
+                object.insert("free".into(), json!(format_bytes(report.free_bytes)));
+            }
+            println!("{}", serde_json::to_string_pretty(&output)?);
         }
         Commands::Exec { args } | Commands::Cargo(args) => {
             runner::install_signal_handler()?;

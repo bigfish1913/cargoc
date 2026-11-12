@@ -97,7 +97,7 @@ cargo install --path . --locked
 
 `--locked` 使用已提交的 `Cargo.lock`，固定依赖版本。
 
-> **版本说明：** **0.1.6** 允许同一工作区的多个 Cargo 构建并行进入：使用 Cargo 原生锁串行实际写入，同时保护长期运行的 `cargo run` 缓存不被清理；保留 0.1.5 的缓存清理抖动保护、0.1.4 的旧版 Cargo 配置选择性清理，以及更早版本的 Windows 原生代理、受管理安装缓存和非托管旧缓存审计。升级后需再次运行 `cargoc setup --enable` 刷新原生代理。crates.io 是独立发布渠道，其 **0.1.0** 仍使用迁移说明中列出的旧配置位置。需要这些新功能时，请使用已完成的 GitHub Release 或从源码安装。
+> **版本说明：** **0.1.7** 在 `cargoc clean` 输出中新增人类可读的字节单位字段（`before`／`after`／`removed`／`free`），与原有 `*_bytes` 字段并存，因此不必再手工换算 `157.38 GiB` 这类数字；保留 0.1.6 的并发工作区租约、0.1.5 的缓存清理抖动保护、0.1.4 的旧版 Cargo 配置选择性清理，以及更早版本的 Windows 原生代理、受管理安装缓存和非托管旧缓存审计。升级后需再次运行 `cargoc setup --enable` 刷新原生代理。crates.io 是独立发布渠道，其 **0.1.0** 仍使用迁移说明中列出的旧配置位置。需要这些新功能时，请使用已完成的 GitHub Release 或从源码安装。
 
 如需专用缓存根目录，用下面的命令**替代**上面的默认 `init`：
 
@@ -195,7 +195,7 @@ cargoc self-update --rollback
 | `config [设置项]` | 显示配置，或更新指定设置项。 |
 | `status [--json]` | 显示受管理工作区／安装缓存大小及缓存所在卷的剩余空间；JSON 还包含配置。 |
 | `audit --path PATH` | 只读盘点非托管旧缓存的逻辑字节、文件数和已有 Cargo 锁状态，输出 JSON；不接管、迁移或删除。 |
-| `clean [--dry-run]` | 清空**所有空闲的受管理中间缓存**，不只处理过期或超预算缓存。预演报告拟删除内容，不删除缓存文件。 |
+| `clean [--dry-run]` | 清空**所有空闲的受管理中间缓存**，不只处理过期或超预算缓存。预演报告拟删除内容，不删除缓存文件。JSON 报告同时提供原始 `*_bytes` 字段和人类可读的 `before`／`after`／`removed`／`free` 大小。 |
 | `self-update [--check\|--rollback\|--force]` | 检查或安装最新 GitHub Release，也可恢复本地最新回滚备份。 |
 | `exec <Cargo 参数...>` | 转发与 cargoc 命令重名的 Cargo 命令，或以 Cargo 选项、工具链选择器开头的调用。 |
 

@@ -97,7 +97,7 @@ cargo install --path . --locked
 
 `--locked` uses the committed `Cargo.lock` for reproducible dependency versions.
 
-> **Version note:** **0.1.6** allows concurrent Cargo builds for one workspace, using Cargo's native lock to serialize writes while a long-running `cargo run` keeps the managed cache protected from cleanup. It retains 0.1.5's cache-churn protection, 0.1.4's selectable legacy Cargo-config cleanup, and the earlier native Windows proxy, managed install caches, and external-cache auditing. After upgrading, run `cargoc setup --enable` again to refresh the native proxy. crates.io remains a separate publication: its **0.1.0** release uses the legacy configuration locations listed in the migration section. Use a completed GitHub Release or install from source for these features.
+> **Version note:** **0.1.7** adds human-readable byte sizes (`before`/`after`/`removed`/`free`) alongside the raw `*_bytes` fields in `cargoc clean` output, so reports such as `157.38 GiB` no longer require mental arithmetic. It retains 0.1.6's concurrent workspace leases, 0.1.5's cache-churn protection, 0.1.4's selectable legacy Cargo-config cleanup, and the earlier native Windows proxy, managed install caches, and external-cache auditing. After upgrading, run `cargoc setup --enable` again to refresh the native proxy. crates.io remains a separate publication: its **0.1.0** release uses the legacy configuration locations listed in the migration section. Use a completed GitHub Release or install from source for these features.
 
 To choose a dedicated root, use this **instead of** the default `init` above:
 
@@ -189,7 +189,7 @@ cargoc self-update --rollback
 | `config [settings]` | Show configuration, or update supplied settings. |
 | `status [--json]` | Report managed workspace/install caches and free space on the cache volume. JSON also includes configuration. |
 | `audit --path PATH` | Read-only JSON inventory of external caches: logical bytes, file counts, and existing Cargo lock observations. Never adopts, moves, or deletes files. |
-| `clean [--dry-run]` | Clear **all idle managed intermediate caches**, not just old/over-budget ones. Dry run reports proposed removals without deleting cache files. |
+| `clean [--dry-run]` | Clear **all idle managed intermediate caches**, not just old/over-budget ones. Dry run reports proposed removals without deleting cache files. The JSON report carries both raw `*_bytes` fields and human-readable `before`/`after`/`removed`/`free` sizes. |
 | `self-update [--check\|--rollback\|--force]` | Check or install the latest native GitHub Release, or restore the newest local rollback backup. |
 | `exec <cargo arguments...>` | Forward a command whose name collides with cargoc's own commands, or start with Cargo options/toolchain selection. |
 

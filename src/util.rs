@@ -8,6 +8,22 @@ use std::{
 
 pub const GIB: f64 = 1_073_741_824.0;
 
+/// Format logical byte counts using binary units for human-facing reports.
+pub fn format_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} B")
+    } else {
+        format!("{value:.2} {}", UNITS[unit])
+    }
+}
+
 /// Read small advisory metadata without following links or allocating unbounded data.
 pub fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
     use std::io::Read;
@@ -152,4 +168,18 @@ pub fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
     })();
     let _ = fs::remove_file(&temp);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_bytes;
+
+    #[test]
+    fn byte_counts_use_binary_units() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(1023), "1023 B");
+        assert_eq!(format_bytes(1536), "1.50 KiB");
+        assert_eq!(format_bytes(168_990_801_098), "157.38 GiB");
+        assert_eq!(format_bytes(5 * 1024_u64.pow(4)), "5.00 TiB");
+    }
 }
