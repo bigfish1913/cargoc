@@ -754,7 +754,7 @@ fn main() {{
 
     #[test]
     fn emergency_stop_uses_injected_probe_and_releases_install_lease() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
         let cargo = helper(&temp);
         let (config, config_path) = config(&temp, cargo);
         let started = temp.path().join("started");
@@ -800,7 +800,7 @@ fn main() {{
 
     #[test]
     fn probe_error_stops_owned_tree_before_releasing_lease() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
         let cargo = helper(&temp);
         let (config, config_path) = config(&temp, cargo);
         let started = temp.path().join("started");
@@ -840,7 +840,7 @@ fn main() {{
 
     #[test]
     fn spawn_failure_releases_install_lease_after_version_hook() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
         let cargo = helper(&temp);
         let (config, config_path) = config(&temp, cargo.clone());
         let args = os_args(&["install", "spawn-failure", "--oneshot"]);
@@ -880,7 +880,7 @@ fn main() {{
             );
             return;
         }
-        let temp = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
         let cargo = helper(&temp);
         let (config, config_path) = config(&temp, cargo);
         let child_file = temp.path().join("child-pid");
@@ -923,7 +923,7 @@ fn main() {{
 
     #[test]
     fn zero_abort_threshold_does_not_emergency_stop_when_probe_is_zero() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
         let cargo = helper(&temp);
         let (mut config, config_path) = config(&temp, cargo);
         config.abort_free_gib = 0.0;
