@@ -324,20 +324,18 @@ pub fn status() -> crate::Result<()> {
             let selected = cargo::candidates(Path::new("cargo"), &search)
                 .into_iter()
                 .find(|path| {
-                    if !path.is_file() {
-                        return false;
-                    }
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
-                        if path
-                            .metadata()
-                            .is_ok_and(|m| m.permissions().mode() & 0o111 == 0)
-                        {
-                            return false;
-                        }
+                        path.is_file()
+                            && path
+                                .metadata()
+                                .is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
                     }
-                    true
+                    #[cfg(not(unix))]
+                    {
+                        path.is_file()
+                    }
                 });
             let active = installed
                 && selected.as_ref().is_some_and(|path| {
