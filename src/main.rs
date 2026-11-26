@@ -81,10 +81,25 @@ enum Commands {
         #[arg(long, conflicts_with = "rollback")]
         force: bool,
     },
-    /// Clear idle managed intermediate caches, never final Cargo artifacts
+    /// Clear idle managed caches; project final artifacts require --global --include-targets
     Clean {
         #[arg(long)]
         dry_run: bool,
+        /// Global report, optionally including authorized project targets
+        #[arg(long)]
+        global: bool,
+        /// Search only these directories (repeatable); otherwise use clean_roots
+        #[arg(long = "root", requires = "include_targets")]
+        roots: Vec<PathBuf>,
+        /// Also delete final artifacts in verified workspace/target directories
+        #[arg(long, requires = "global")]
+        include_targets: bool,
+        /// Confirm whole-target deletion. Stop all IDE/agent/background builds first
+        #[arg(long, requires = "include_targets")]
+        yes: bool,
+        /// Maximum seconds per Cargo discovery/clean subprocess
+        #[arg(long, default_value_t = 60, requires = "global", value_parser = clap::value_parser!(u64).range(1..=3600))]
+        timeout_seconds: u64,
     },
     /// Forward arguments even when the command name is reserved by cargoc
     Exec {
@@ -106,6 +121,17 @@ enum LegacyBuildDirAction {
 struct Settings {
     #[arg(long)]
     cache_dir: Option<PathBuf>,
+    /// Bind an initialized cache to a required mounted filesystem (Unix)
+    #[arg(long, conflicts_with = "clear_require_mount")]
+    require_mount: Option<PathBuf>,
+    /// Remove the mount and cache-identity binding
+    #[arg(long)]
+    clear_require_mount: bool,
+    /// Replace global-clean search roots; repeat for multiple directories
+    #[arg(long = "clean-root", conflicts_with = "clear_clean_roots")]
+    clean_roots: Vec<PathBuf>,
+    #[arg(long)]
+    clear_clean_roots: bool,
     #[arg(long)]
     auto_clean: Option<bool>,
     #[arg(long)]
@@ -147,6 +173,23 @@ impl Settings {
             poll_seconds,
             cargo
         );
+        if self.clear_require_mount {
+            config.require_mount = None;
+            config.required_root_id = None;
+            changed = true;
+        }
+        if let Some(path) = self.require_mount {
+            cargoc::storage::bind(config, &path)?;
+            changed = true;
+        }
+        if self.clear_clean_roots || !self.clean_roots.is_empty() {
+            config.clean_roots = self
+                .clean_roots
+                .iter()
+                .map(|p| absolute(p))
+                .collect::<Result<_>>()?;
+            changed = true;
+        }
         config.validate()?;
         Ok(changed)
     }
@@ -340,14 +383,15 @@ fn execute(cli: Cli) -> Result<i32> {
         Commands::Config(values) => settings(&path, values, false)?,
         Commands::Status { json: machine } => {
             let store = Store::open(Config::load(&path)?, false)?;
-            let entries = store.entries()?;
+            let (entries, skipped) = store.inventory()?;
             let bytes: u64 = entries.iter().map(|e| e.bytes).sum();
             let free = store.free()?;
             if machine {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&json!({"cache_dir": store.root,
-                    "total_bytes": bytes, "free_bytes": free, "config": store.config, "workspaces": entries}))?
+                    "total_bytes": bytes, "free_bytes": free, "config": store.config,
+                    "workspaces": entries, "skipped": skipped}))?
                 );
             } else {
                 println!(
@@ -363,6 +407,9 @@ fn execute(cli: Cli) -> Result<i32> {
                     };
                     println!("  {:8.2} GiB  {label}", entry.bytes as f64 / GIB);
                 }
+                for reason in skipped {
+                    eprintln!("cargoc: skipped cache: {reason}");
+                }
             }
         }
         Commands::SelfUpdate {
@@ -370,8 +417,35 @@ fn execute(cli: Cli) -> Result<i32> {
             rollback,
             force,
         } => self_update::run(check, rollback, force)?,
-        Commands::Clean { dry_run } => {
-            let store = Store::open(Config::load(&path)?, false)?;
+        Commands::Clean {
+            dry_run,
+            global,
+            roots,
+            include_targets,
+            yes,
+            timeout_seconds,
+        } => {
+            let config = Config::load(&path)?;
+            if global {
+                runner::install_signal_handler()?;
+                let report = cargoc::global_clean::execute(
+                    &config,
+                    &cargoc::global_clean::Options {
+                        roots,
+                        include_targets,
+                        dry_run,
+                        yes,
+                        timeout_seconds,
+                    },
+                )?;
+                println!("{}", serde_json::to_string_pretty(&report)?);
+                return Ok(if report.incomplete { 1 } else { 0 });
+            }
+            let store = if dry_run {
+                Store::inspect(config)?
+            } else {
+                Store::open(config, false)?
+            };
             let report = store.collect(&GcOptions {
                 all_idle: true,
                 dry_run,

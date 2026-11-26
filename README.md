@@ -97,7 +97,7 @@ cargo install --path . --locked
 
 `--locked` uses the committed `Cargo.lock` for reproducible dependency versions.
 
-> **Version note:** **0.1.7** adds human-readable byte sizes (`before`/`after`/`removed`/`free`) alongside the raw `*_bytes` fields in `cargoc clean` output, so reports such as `157.38 GiB` no longer require mental arithmetic. It retains 0.1.6's concurrent workspace leases, 0.1.5's cache-churn protection, 0.1.4's selectable legacy Cargo-config cleanup, and the earlier native Windows proxy, managed install caches, and external-cache auditing. After upgrading, run `cargoc setup --enable` again to refresh the native proxy. crates.io remains a separate publication: its **0.1.0** release uses the legacy configuration locations listed in the migration section. Use a completed GitHub Release or install from source for these features.
+> **Version note:** **0.1.8** adds opt-in fail-closed mount binding for managed caches (`require_mount`), explicit `cargoc clean --global --include-targets` cleanup of verified project `target/` directories with dry-run/`--yes`, Cargo-native deletion and lock/path safeguards, and over-budget eviction on healthy disks toward `max_cache_gib × low_water_ratio`. It also skips relocated workspace records instead of aborting cleanup and reports available/required GiB when refusing a build. It retains 0.1.7's readable sizes, 0.1.6's concurrent workspace leases, 0.1.5's cache-churn protection, 0.1.4's selectable legacy Cargo-config cleanup, and the earlier native Windows proxy, managed install caches, and external-cache auditing. After upgrading, run `cargoc setup --enable` again to refresh the native proxy. crates.io remains a separate publication: its **0.1.0** release uses the legacy configuration locations listed in the migration section. Use a completed GitHub Release or install from source for these features.
 
 To choose a dedicated root, use this **instead of** the default `init` above:
 
@@ -187,13 +187,14 @@ cargoc self-update --rollback
 | `setup [settings] [--enable\|--disable\|--status]` | Configure cargoc and optionally enable, restore, or inspect default Cargo integration. |
 | `init [settings]` | Create a user configuration and an owned cache root. |
 | `config [settings]` | Show configuration, or update supplied settings. |
-| `status [--json]` | Report managed workspace/install caches and free space on the cache volume. JSON also includes configuration. |
+| `status [--json]` | Report validated workspace/install caches, skipped entries, and free space on the cache volume. JSON also includes configuration. |
 | `audit --path PATH` | Read-only JSON inventory of external caches: logical bytes, file counts, and existing Cargo lock observations. Never adopts, moves, or deletes files. |
 | `clean [--dry-run]` | Clear **all idle managed intermediate caches**, not just old/over-budget ones. Dry run reports proposed removals without deleting cache files. The JSON report carries both raw `*_bytes` fields and human-readable `before`/`after`/`removed`/`free` sizes. |
+| `clean --global --include-targets [--root PATH] [--dry-run\|--yes]` | Explicitly discover Cargo workspaces within authorized roots and clean their default `target/` directories, including final artifacts, in addition to managed caches. See [global cleanup](#global-project-cleanup). |
 | `self-update [--check\|--rollback\|--force]` | Check or install the latest native GitHub Release, or restore the newest local rollback backup. |
 | `exec <cargo arguments...>` | Forward a command whose name collides with cargoc's own commands, or start with Cargo options/toolchain selection. |
 
-**`cargoc clean` is not `cargo clean`.** It leaves final Cargo outputs alone. In contrast:
+**Plain `cargoc clean` is not `cargo clean`.** It leaves final Cargo outputs alone; only the explicit global `--include-targets` mode below opts into deleting project final outputs. In contrast:
 
 ```sh
 cargoc exec clean
@@ -206,7 +207,31 @@ Some commands, including Cargo `clean`, `fmt`, `new`, `init`, `metadata`, `fetch
 
 Registry, git, and `--path` installations through `cargoc install` / `cargoc exec install` now use managed intermediate caches without requiring a workspace in the current directory. `install --list`, `install --help`, and `help install` remain passthroughs. Installs share the build lifecycle's leases, budget, disk monitoring, and cleanup. Identity includes the Cargo version, explicit toolchain, and complete arguments (local source paths normalized); only digests are stored, not URL credentials in state or cargoc logs. Identical concurrent installs are refused; different arguments may select different caches. Cargo's own output may still include source URLs.
 
-Installed programs remain in Cargo's selected install root, and `--target-dir` keeps its native meaning; neither is collected. Never point sources, the install root, or final target-dir into the managed root through global Cargo configuration. cargoc checks explicit paths, relevant environment variables, and explicit `--config` output paths, but does not fully evaluate every implicit Cargo configuration layer.
+Installed programs remain in Cargo's selected install root, and `--target-dir` keeps its native meaning; neither is collected by automatic GC or plain `clean`. The explicit global mode below only handles verified default workspace `target/` paths, not arbitrary custom output paths. Never point sources, the install root, or final target-dir into the managed root through global Cargo configuration. cargoc checks explicit paths, relevant environment variables, and explicit `--config` output paths, but does not fully evaluate every implicit Cargo configuration layer.
+
+### Global project cleanup
+
+Stop all related builds, IDE checks, agents, and background producers first. Global cleanup authorizes removal of **whole default workspace `target/` directories, including executable binaries and any manual data stored there**; keep anything you need outside target. Lock checks are observations, not proof that arbitrary writers have stopped.
+
+```sh
+# Preview only: no project/cache files, layout, or locks are created/deleted.
+cargoc clean --global --root ~/work --include-targets --dry-run
+# Explicit deletion consent (not a force/unlock switch):
+cargoc clean --global --root ~/work --include-targets --yes
+
+# Persist bounded search roots once (repeat --clean-root to replace with a list):
+cargoc config --clean-root ~/work
+cargoc clean --global --include-targets --dry-run
+cargoc clean --global --include-targets --yes
+# Reset the list:
+cargoc config --clear-clean-roots
+```
+
+`clean_roots` is the TOML array of absolute search roots. `--root` replaces it for one invocation. Root/home-wide scans are refused. Discovery verifies Cargo workspaces with offline, locked metadata, handles independent nested workspaces/worktrees, and deduplicates workspace members. It does not follow links/reparse points, descend into tool stores, or cross unapproved mount boundaries. Missing/invalid Cargo `CACHEDIR.TAG`, unknown root layouts/files, source manifests inside target, unavailable offline metadata, and busy locks are reported/skipped rather than adopted or force-deleted. This conservative first version can skip legitimate unusual outputs (for example packaged source trees or custom profiles); inspect the reasons and handle them separately.
+
+Only existing default `<workspace>/target` paths are candidates. Custom target-dir paths and separate legacy build-dir caches are **not** automatically discovered/deleted; a historical default target may still be cleaned even when current Cargo config chooses a different output path. Native Cargo clean is explicitly constrained to the authorized target/build directory, so implicit build-dir configuration cannot expand the deletion scope. Paths containing template braces are refused rather than expanded. Cargo **1.91+** is required in each workspace (including Rustup overrides); missing toolchains are reported without automatic installation. `--timeout-seconds` bounds each metadata/clean child (default 60, range 1–3600); timeout stops only that child tree, never unrelated builders.
+
+Global JSON separates `managed_report`, `managed_error`, per-target status/bytes, skips, and per-volume free-space observations. Any skipped/failed/busy item makes `incomplete=true` and exit status **1**; invalid arguments/configuration return **2**. Successful items are not rolled back. `--dry-run` sizes are estimated logical bytes, not promised physical disk recovery. `--global` without `--include-targets` remains managed-only. An offline managed volume is reported as an error, but authorized internal targets can still be cleaned without initializing a substitute managed cache. Automatic GC never invokes global target cleanup.
 
 ## Updating cargoc
 
@@ -293,14 +318,30 @@ Keep configuration outside the disposable cache root. All settings below are acc
 | `--poll-seconds N` | `5` | Automatic cleanup interval; between `0.1` and `86400` seconds. Emergency free-space checks run more frequently (up to once per loop, approximately 250 ms by default). |
 | `--auto-clean true\|false` | `true` | Enable automatic cleanup before, during, and after managed commands. Disabling it does not disable startup free-space checks or the emergency stop. |
 | `--cargo PATH` | `cargo` | Real Cargo executable, not a shell command. Do not point it back to cargoc. |
+| `--require-mount PATH` | Off | Bind an already initialized cache to a mounted filesystem and its existing ownership marker (Unix only). |
+| `--clear-require-mount` | — | Explicitly remove both mount and cache-identity binding. |
+| `--clean-root PATH` | Empty | Replace `clean_roots` with repeatable absolute roots for explicit global target cleanup. |
+| `--clear-clean-roots` | — | Clear the global cleanup root list. |
 
 The default cache base is `%LOCALAPPDATA%` on Windows and `$XDG_CACHE_HOME` on Linux/macOS; if unset, it falls back to `~/.cache`. Numeric values must be finite and nonnegative, with the stricter limits listed above. When `min_free_gib` is nonzero, `abort_free_gib` cannot exceed it.
+
+### Removable cache volumes: refuse fallback
+
+After initializing/moving a cache onto a mounted volume, bind it explicitly:
+
+```sh
+cargoc config --require-mount /Volumes/BuildCache
+```
+
+This saves `require_mount` and the existing marker's `required_root_id`. Do not invent or copy marker identities to adopt unknown directories. Guarded builds require an existing, non-symlink mount boundary, cache storage on that filesystem, and the bound ownership marker. A missing disk, ordinary directory at its old mountpoint, or different/missing marker fails **before initialization**: no replacement root is created on the internal disk. Runtime loss stops only the owned Cargo tree, even when `abort_free_gib=0`. Configuration remains readable while disconnected. New caches must first be explicitly initialized on the correctly mounted disk, then bound; `config --clear-require-mount` deliberately disables the guard. Unix only; Windows rejects this setting rather than silently ignoring it.
+
+Device numbers detect a mount boundary, not a permanent volume UUID; marker identity binds the cache, not the physical disk. This is not protection against hostile mount changes or cloned markers, and in-flight I/O can still fail on hot unplug. It also cannot constrain builds that bypass cargoc. Space thresholds always measure the **cache volume**, not a separate final-output volume.
 
 ## Ownership and cleanup safety
 
 - Each workspace gets `<cache-dir>/workspaces/<SHA256>` based on its resolved absolute workspace path (case and verbatim-prefix aliases normalized on Windows). A root ownership marker (`.cargoc-root.json`) and validated workspace records identify managed data.
-- Automatic cleanup removes oldest-last-used idle caches when they expire or when the managed budget/free-space thresholds trigger pressure. A healthy-disk budget overage is a soft limit: recent caches are retained to prevent rebuild churn, while stale caches are reclaimed toward the low-water target. Disk pressure overrides the age floor; the current workspace is protected before and after its build.
-- Workspace leases, a collector lock, and Cargo native locks protect active caches. Concurrent cargoc builds of the same workspace are refused rather than sharing a writable managed cache. Locked candidates are skipped.
+- Automatic cleanup evicts eligible idle caches from least to most recently used. When the managed cache exceeds `max_cache_gib`, cleanup aims for `max_cache_gib × low_water_ratio` regardless of cache age or free disk space. Age expiry and `min_free_gib` also trigger cleanup independently. The current workspace is protected before and during its build, and becomes eligible after its lease is released.
+- Workspace leases, a collector lock, and Cargo native locks protect active caches. Concurrent cargoc builds of the same workspace hold shared leases and let Cargo serialize native writes. Locked collection candidates are skipped; native lock files are retained, including `.cargo-lock`, `.cargo-build-lock`, and `.cargo-artifact-lock`.
 - Manual `clean` considers all idle managed caches, even with `auto_clean = false`; it does not clean unknown contents. Some lock files/directories may remain after cleanup.
 - Changing `cache_dir` does **not** migrate or delete the old root. Existing non-cargoc caches remain untouched and are not counted toward the managed budget. Never add ownership markers by hand to adopt an old cache.
 - The wrapper supplies `build.build-dir` for each managed invocation. It does not change Cargo's original target-dir configuration or move existing outputs. Old caches must be handled separately by their owner.

@@ -97,7 +97,7 @@ cargo install --path . --locked
 
 `--locked` 使用已提交的 `Cargo.lock`，固定依赖版本。
 
-> **版本说明：** **0.1.7** 在 `cargoc clean` 输出中新增人类可读的字节单位字段（`before`／`after`／`removed`／`free`），与原有 `*_bytes` 字段并存，因此不必再手工换算 `157.38 GiB` 这类数字；保留 0.1.6 的并发工作区租约、0.1.5 的缓存清理抖动保护、0.1.4 的旧版 Cargo 配置选择性清理，以及更早版本的 Windows 原生代理、受管理安装缓存和非托管旧缓存审计。升级后需再次运行 `cargoc setup --enable` 刷新原生代理。crates.io 是独立发布渠道，其 **0.1.0** 仍使用迁移说明中列出的旧配置位置。需要这些新功能时，请使用已完成的 GitHub Release 或从源码安装。
+> **版本说明：** **0.1.8** 新增可选的外置缓存挂载绑定（`require_mount`），卷缺失或身份不符时拒绝创建替代缓存并停止本次构建；新增显式 `cargoc clean --global --include-targets`，在授权范围内经 Cargo 校验后清理项目默认 `target/`（支持预演和 `--yes`，并含锁与路径安全检查）；磁盘余量充足时，超过 `max_cache_gib` 也会按 `max_cache_gib × low_water_ratio` 回收最久未用缓存。此外，失效的工作区路径记录会被跳过而不再中断清理，拒绝构建时会报告可用/所需 GiB。保留 0.1.7 的可读字节单位、0.1.6 的并发工作区租约、0.1.5 的缓存抖动保护、0.1.4 的旧版 Cargo 配置选择性清理，以及更早版本的 Windows 原生代理、受管理安装缓存和非托管旧缓存审计。升级后需再次运行 `cargoc setup --enable` 刷新原生代理。crates.io 是独立发布渠道，其 **0.1.0** 仍使用迁移说明中列出的旧配置位置。需要这些新功能时，请使用已完成的 GitHub Release 或从源码安装。
 
 如需专用缓存根目录，用下面的命令**替代**上面的默认 `init`：
 
@@ -193,13 +193,14 @@ cargoc self-update --rollback
 | `setup [设置项] [--enable\|--disable\|--status]` | 配置 cargoc，并可选择启用、恢复或检查默认 Cargo 接管。 |
 | `init [设置项]` | 创建用户配置和带所有权标记的缓存根目录。 |
 | `config [设置项]` | 显示配置，或更新指定设置项。 |
-| `status [--json]` | 显示受管理工作区／安装缓存大小及缓存所在卷的剩余空间；JSON 还包含配置。 |
+| `status [--json]` | 显示通过校验的工作区和安装缓存大小、跳过的条目及缓存卷剩余空间，JSON 还包含配置。 |
 | `audit --path PATH` | 只读盘点非托管旧缓存的逻辑字节、文件数和已有 Cargo 锁状态，输出 JSON；不接管、迁移或删除。 |
 | `clean [--dry-run]` | 清空**所有空闲的受管理中间缓存**，不只处理过期或超预算缓存。预演报告拟删除内容，不删除缓存文件。JSON 报告同时提供原始 `*_bytes` 字段和人类可读的 `before`／`after`／`removed`／`free` 大小。 |
+| `clean --global --include-targets [--root PATH] [--dry-run\|--yes]` | 显式扫描授权范围内的 Cargo 工作区，清理默认 `target/`（包括最终产物）及托管缓存。见下方“跨项目全局清理”。 |
 | `self-update [--check\|--rollback\|--force]` | 检查或安装最新 GitHub Release，也可恢复本地最新回滚备份。 |
 | `exec <Cargo 参数...>` | 转发与 cargoc 命令重名的 Cargo 命令，或以 Cargo 选项、工具链选择器开头的调用。 |
 
-**`cargoc clean` 不等于 `cargo clean`。** 前者不删除最终产物。相反：
+**不带全局参数的 `cargoc clean` 不等于 `cargo clean`。** 默认不删除最终产物；只有下方显式 `--global --include-targets` 模式才会删除项目最终产物。相反：
 
 ```sh
 cargoc exec clean
@@ -212,7 +213,31 @@ cargoc exec init new-project
 
 `cargoc install`／`cargoc exec install` 的 registry、git 和 `--path` 安装现在使用受管理中间缓存，无需在当前目录存在工作区。`install --list`、`install --help` 和 `help install` 仍直接透传。安装缓存与构建共用租约、预算、空间监测及清理规则；缓存身份包含 Cargo 版本、显式工具链和完整参数（本地源路径规范化），只保存摘要，不把 URL 凭据写入状态或 cargoc 日志。同一身份的并发安装会被拒绝；参数不同可能生成不同缓存。Cargo 自己的输出仍可能包含源地址。
 
-已安装程序仍在 Cargo 选择的安装根目录，`--target-dir` 也保留原生语义；两者不由 cargoc 清理。不要通过全局 Cargo 配置把源码、安装根目录或最终 target-dir 指进受管理根目录。cargoc 检查显式路径、相关环境变量和显式 `--config` 输出路径，但不会完整求值 Cargo 所有隐式配置层级。
+已安装程序仍在 Cargo 选择的安装根目录，`--target-dir` 也保留原生语义；自动 GC 和普通 `clean` 不收集两者。显式全局模式仅处理确认过的默认工作区 `target/`，不自动删除任意自定义输出路径。不要通过全局 Cargo 配置把源码、安装根目录或最终 target-dir 指进受管理根目录。cargoc 检查显式路径、相关环境变量和显式 `--config` 输出路径，但不会完整求值 Cargo 所有隐式配置层级。
+
+### 跨项目全局清理
+
+先停止相关构建、IDE 检查、agent 和后台生产者。全局模式授权删除**整个默认工作区 `target/`，包括可执行二进制和手动放进去的数据**，需要保留的内容请先移出。锁检查只是观察结果，不能证明任意写入者都已停止。
+
+```sh
+# 只预览：不创建/删除项目或缓存文件、布局、锁。
+cargoc clean --global --root ~/work --include-targets --dry-run
+# 明确授权删除（不是强制解锁开关）：
+cargoc clean --global --root ~/work --include-targets --yes
+
+# 一次配置扫描范围：重复 --clean-root 可替换为多个目录。
+cargoc config --clean-root ~/work
+cargoc clean --global --include-targets --dry-run
+cargoc clean --global --include-targets --yes
+# 清空列表：
+cargoc config --clear-clean-roots
+```
+
+TOML 对应 `clean_roots = ["/绝对路径/work"]`；临时 `--root` 替换配置范围。拒绝扫描文件系统根目录或整个 HOME。通过离线、锁定的 Cargo metadata 验证工作区，支持独立嵌套工作区和 worktree，成员 crate 去重；不跟随符号链接/重解析点，不进入工具存储，不跨越未授权挂载边界。缺失/无效 Cargo `CACHEDIR.TAG`、未知顶层文件/布局、target 内含源码 manifest、离线 metadata 无法解析、锁忙等情况会报告并跳过，不接管、不强删。这一保守版本可能跳过合法但特殊的布局（例如打包源码、自定义 profile），请根据原因另行处理。
+
+仅收集真实存在的默认 `<workspace>/target`。自定义 target-dir、独立 legacy build-dir **不自动发现/删除**；即使当前 Cargo 配置选择别的路径，历史默认 target 仍可被纳入。底层原生 Cargo clean 会把 target/build 输出范围固定到授权目录，隐式 build-dir 配置不能扩大删除范围；包含模板花括号的路径直接拒绝，不进行展开。每个工作区（包括 Rustup 覆盖）均需要 Cargo **1.91+**，缺失工具链只报告，不自动安装。`--timeout-seconds` 限制每个 metadata/clean 子进程（默认 60，范围 1～3600 秒）；超时只停止该子进程树，不杀其他构建。
+
+全局 JSON 分开报告 `managed_report`、`managed_error`、逐 target 状态/字节、跳过原因及分卷空间观察。存在跳过、失败、锁忙时 `incomplete=true`，退出码 **1**；参数/配置错误为 **2**，已成功项目不回滚。预演数值是预计逻辑字节，不保证对应物理释放量。`--global` 不带 `--include-targets` 仍只处理托管缓存。外置托管卷离线时会报告错误，但仍可清理授权的内置盘 target，不初始化替代缓存。自动 GC 永不调用此模式。
 
 ## 更新 cargoc
 
@@ -299,14 +324,30 @@ cargoc config --auto-clean true --abort-free-gib 1
 | `--poll-seconds N` | `5` | 自动清理间隔，范围 `0.1`～`86400` 秒；紧急空间检查更频繁（每轮最多一次，默认约 250 毫秒）。 |
 | `--auto-clean true\|false` | `true` | 在受管理命令开始前、运行中、结束后自动清理；关闭后仍保留启动空间检查和紧急停止。 |
 | `--cargo PATH` | `cargo` | 真实 Cargo 可执行文件，不是 shell 命令；不能指回 cargoc。 |
+| `--require-mount PATH` | 关闭 | 将已有缓存绑定到挂载文件系统及其现有所有权标记（仅 Unix）。 |
+| `--clear-require-mount` | — | 显式解除挂载和缓存身份绑定。 |
+| `--clean-root PATH` | 空 | 用可重复的绝对路径替换全局 target 清理范围 `clean_roots`。 |
+| `--clear-clean-roots` | — | 清空全局清理范围。 |
 
 默认缓存基目录：Windows 为 `%LOCALAPPDATA%`，Linux/macOS 为 `$XDG_CACHE_HOME`；未设置时回退到 `~/.cache`。数值必须有限且非负，并满足上表更严格的限制。`min_free_gib` 非零时，`abort_free_gib` 不得大于它。
+
+### 外置缓存盘：禁止静默回落
+
+在已挂载卷上初始化或迁移缓存后，显式绑定：
+
+```sh
+cargoc config --require-mount /Volumes/BuildCache
+```
+
+命令保存 `require_mount` 及现有 marker 的 `required_root_id`。不要伪造/复制 marker 接管未知目录。受保护构建要求：真实存在且无链接的独立挂载点、缓存在该文件系统上、所有权身份与绑定一致。硬盘缺失、挂载点变成普通目录、marker 缺失或不匹配时，**初始化之前就报错**，不在内置盘创建替代缓存。运行中失联只停止本次 Cargo 进程树，即使 `abort_free_gib=0` 也生效；离线时仍可读取配置。新缓存须先在正确挂载的卷上显式初始化，再绑定；`config --clear-require-mount` 明确解除保护。仅支持 Unix；Windows 对该设置直接报不支持，不静默忽略。
+
+设备号识别挂载边界，不是永久卷 UUID；marker 绑定的是缓存身份，不是物理硬盘。这不是抵御恶意挂载替换或克隆 marker 的沙箱，热拔盘也可能使在途 I/O 失败，绕过 cargoc 的构建不受此保护。空间阈值始终监控**缓存所在卷**，不是另一个最终产物卷。
 
 ## 所有权与清理安全边界
 
 - 按解析后的工作区绝对路径计算 SHA256（Windows 上统一大小写和扩展路径前缀），缓存位于 `<cache-dir>/workspaces/<SHA256>`。根标记 `.cargoc-root.json` 和校验过的工作区记录识别受管理数据。
-- 自动清理按最后使用时间从旧到新选择空闲缓存：过期或空间不足时清理；磁盘健康但超过预算时，预算作为软上限，只回收已过期缓存，避免项目之间反复删除和重新编译。磁盘空间不足时会突破年龄保护以恢复安全余量；当前工作区在编译前后都会受到保护。
-- 工作区租约锁、清理器锁和 Cargo 原生锁保护活跃缓存。同一工作区的并发 cargoc 构建会被拒绝，不共享可写缓存；已锁定候选项会跳过。
+- 自动清理按最后使用时间从旧到新回收符合条件的空闲缓存。托管缓存超过 `max_cache_gib` 时，清理以 `max_cache_gib × low_water_ratio` 为目标，与缓存年龄及磁盘余量无关。缓存过期和磁盘余量低于 `min_free_gib` 也会独立触发清理。当前工作区在构建前和构建期间受保护，释放租约后可参与清理。
+- 工作区租约锁、清理器锁和 Cargo 原生锁保护活跃缓存。同一工作区并发 cargoc 构建持有共享租约，由 Cargo 串行化原生写入；清理时跳过锁忙候选，保留 `.cargo-lock`、`.cargo-build-lock`、`.cargo-artifact-lock` 等原生锁文件。
 - 手动 `clean` 即使在 `auto_clean = false` 时也处理所有空闲受管理缓存，但不清理未知内容。清理后可能保留部分锁文件和目录。
 - 切换 `cache_dir` **不会**迁移或删除旧根目录。既有非 cargoc 缓存保持不变，也不计入预算。不要手动添加所有权标记接管旧缓存。
 - 包装器仅为每次受管理调用提供 `build.build-dir`，不修改 Cargo 原有 target-dir 配置，也不移动现有产物。旧缓存应由其所有者另行处理。

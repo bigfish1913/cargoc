@@ -71,6 +71,10 @@ pub fn identity_path(path: &Path) -> Result<String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => path,
         Err(error) => return Err(error.into()),
     };
+    identity_text(&path)
+}
+
+pub(crate) fn identity_text(path: &Path) -> Result<String> {
     let value = path
         .to_str()
         .ok_or("Workspace/cache paths must be valid UTF-8")?

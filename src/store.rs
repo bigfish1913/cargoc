@@ -2,7 +2,10 @@ use crate::{
     Result,
     config::Config,
     fail,
-    util::{GIB, absolute, atomic_write, check_path, identity_path, now, same_or_descendant},
+    util::{
+        GIB, absolute, atomic_write, check_path, identity_path, identity_text, now,
+        same_or_descendant,
+    },
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -171,10 +174,27 @@ fn scan(path: &Path) -> Result<Tree> {
     Ok(tree)
 }
 
+pub(crate) fn is_native_lock(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| {
+        name == ".cargo-lock" || name == ".cargo-build-lock" || name == ".cargo-artifact-lock"
+    })
+}
+
+/// Observe an existing lock without creating/replacing it. Missing is not proof of idleness.
+pub(crate) fn existing_lock(path: &Path) -> Result<Option<Lease>> {
+    check_path(path)?;
+    if !path.try_exists()? {
+        return Ok(None);
+    }
+    Ok(Some(
+        Lease::acquire(path, false)?.ok_or("existing lock is busy")?,
+    ))
+}
+
 fn clear(tree: &Tree) -> Result<u64> {
     let mut removed: u64 = 0;
     for (path, size) in &tree.files {
-        if path.file_name().is_some_and(|name| name == ".cargo-lock") {
+        if is_native_lock(path) {
             continue;
         }
         check_path(path)?;
@@ -206,13 +226,33 @@ fn clear(tree: &Tree) -> Result<u64> {
 }
 
 impl Store {
+    /// Open inventory without creating layout or lock files (global dry-run).
+    pub fn inspect(config: Config) -> Result<Self> {
+        config.validate()?;
+        crate::storage::check(&config)?;
+        let root = absolute(&config.cache_dir)?;
+        check_path(&root)?;
+        let root_id = crate::storage::root_id(&root)?;
+        Ok(Self {
+            config,
+            root,
+            root_id,
+        })
+    }
+
     pub fn open(config: Config, create: bool) -> Result<Self> {
         config.validate()?;
+        crate::storage::check(&config)?;
         let root = absolute(&config.cache_dir)?;
         check_path(&root)?;
         let marker_path = root.join(MARKER);
         check_path(&marker_path)?;
         if !marker_path.exists() {
+            if config.require_mount.is_some() {
+                return fail(
+                    "Bound cache marker disappeared; refusing to initialize a replacement",
+                );
+            }
             if !create {
                 return fail("Uninitialized cache root; run cargoc init");
             }
@@ -255,6 +295,7 @@ impl Store {
             return fail("Invalid cache ownership marker");
         }
         for dir in ["workspaces", "state", "locks"] {
+            crate::storage::check(&config)?;
             check_path(&root.join(dir))?;
             fs::create_dir_all(root.join(dir))?;
         }
@@ -265,12 +306,17 @@ impl Store {
         })
     }
 
+    pub fn ensure_storage(&self) -> Result<()> {
+        crate::storage::check(&self.config)
+    }
+
     pub fn key(workspace: &Path) -> Result<String> {
         let value = identity_path(workspace)?;
         Ok(format!("{:x}", Sha256::digest(value.as_bytes())))
     }
 
     pub fn workspace(&self, workspace: &Path) -> Result<(String, PathBuf)> {
+        self.ensure_storage()?;
         let workspace = absolute(workspace)?;
         if same_or_descendant(&workspace, &self.root)? {
             return fail("Cache root cannot contain the source workspace");
@@ -282,6 +328,7 @@ impl Store {
     }
 
     pub fn lease(&self, key: &str) -> Result<Option<Lease>> {
+        self.ensure_storage()?;
         if !valid_key(key) {
             return fail("Invalid workspace key");
         }
@@ -291,6 +338,7 @@ impl Store {
     /// Shared workspace leases allow Cargo's native lock to serialize
     /// concurrent builds while keeping the cache protected from collection.
     pub fn shared_lease(&self, key: &str) -> Result<Option<Lease>> {
+        self.ensure_storage()?;
         if !valid_key(key) {
             return fail("Invalid workspace key");
         }
@@ -319,6 +367,7 @@ impl Store {
     /// Installation caches share the same physical layout and GC/lease namespace,
     /// but never pretend to be a source workspace.
     pub fn install(&self, identity: &str) -> Result<(String, PathBuf)> {
+        self.ensure_storage()?;
         if !valid_key(identity) {
             return fail("Invalid install identity");
         }
@@ -350,7 +399,8 @@ impl Store {
         Ok((key, path))
     }
 
-    fn read_record(&self, key: &str) -> Result<Record> {
+    // A matching historical path key can outlive a move followed by a symlink.
+    fn read_record(&self, key: &str) -> Result<Option<Record>> {
         if !valid_key(key) {
             return fail("Invalid state filename");
         }
@@ -366,10 +416,14 @@ impl Store {
         }
         match record.kind {
             CacheKind::Workspace => {
-                if record.install_identity.is_some()
-                    || !record.workspace.is_absolute()
-                    || self.workspace(&record.workspace)?.0 != key
-                {
+                if record.install_identity.is_some() || !record.workspace.is_absolute() {
+                    return fail("Invalid workspace cache identity");
+                }
+                if self.workspace(&record.workspace)?.0 != key {
+                    let original = identity_text(&absolute(&record.workspace)?)?;
+                    if format!("{:x}", Sha256::digest(original.as_bytes())) == key {
+                        return Ok(None);
+                    }
                     return fail("Invalid workspace cache identity");
                 }
             }
@@ -389,30 +443,46 @@ impl Store {
                 }
             }
         }
-        Ok(record)
+        Ok(Some(record))
     }
 
     pub fn entries(&self) -> Result<Vec<Entry>> {
-        check_path(&self.root.join("state"))?;
-        let mut entries = Vec::new();
-        for file in fs::read_dir(self.root.join("state"))? {
-            let path = file?.path();
-            if path.extension().is_some_and(|e| e == "json") {
-                let key = path
-                    .file_stem()
-                    .ok_or("Invalid state filename")?
-                    .to_string_lossy();
-                let record = self.read_record(&key)?;
-                entries.push(Entry {
-                    bytes: scan(&self.root.join("workspaces").join(&record.key))?.bytes,
-                    record,
-                });
-            }
+        let (entries, skipped) = self.inventory()?;
+        if let Some(reason) = skipped.into_iter().next() {
+            return fail(reason);
         }
         Ok(entries)
     }
 
+    /// Inventory valid caches and report records whose source path now resolves elsewhere.
+    pub fn inventory(&self) -> Result<(Vec<Entry>, Vec<String>)> {
+        self.ensure_storage()?;
+        let state = self.root.join("state");
+        check_path(&state)?;
+        let mut entries = Vec::new();
+        let mut skipped = Vec::new();
+        for file in fs::read_dir(state)? {
+            let path = file?.path();
+            if path.extension().is_none_or(|ext| ext != "json") {
+                continue;
+            }
+            let key = path
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .ok_or("Invalid state filename")?;
+            match self.read_record(key)? {
+                Some(record) => entries.push(Entry {
+                    bytes: scan(&self.root.join("workspaces").join(key))?.bytes,
+                    record,
+                }),
+                None => skipped.push(format!("{key}: workspace path now resolves elsewhere")),
+            }
+        }
+        Ok((entries, skipped))
+    }
+
     pub fn free(&self) -> Result<u64> {
+        self.ensure_storage()?;
         Ok(fs2::available_space(&self.root)?)
     }
 
@@ -426,15 +496,27 @@ impl Store {
         options: &GcOptions,
         free: impl Fn() -> Result<u64>,
     ) -> Result<GcReport> {
+        self.ensure_storage()?;
         let mut report = GcReport {
             dry_run: options.dry_run,
             ..GcReport::default()
         };
-        let Some(_gc) = Lease::acquire(&self.root.join("locks/gc.lock"), true)? else {
-            report.busy = true;
-            return Ok(report);
+        let gc = if options.dry_run {
+            existing_lock(&self.root.join("locks/gc.lock"))
+        } else {
+            Lease::acquire(&self.root.join("locks/gc.lock"), true)
+                .and_then(|lease| lease.ok_or_else(|| "GC lock is busy".into()).map(Some))
         };
-        let mut entries = self.entries()?;
+        let _gc = match gc {
+            Ok(lease) => lease,
+            Err(error) => {
+                report.busy = true;
+                report.skipped.push(error.to_string());
+                return Ok(report);
+            }
+        };
+        let (mut entries, skipped) = self.inventory()?;
+        report.skipped = skipped;
         entries.sort_by(|a, b| a.record.last_used.total_cmp(&b.record.last_used));
         let mut total = entries.iter().map(|e| e.bytes).sum::<u64>();
         report.before_bytes = total;
@@ -442,47 +524,39 @@ impl Store {
         let cfg = &self.config;
         let capacity_pressure = total as f64 > cfg.max_cache_gib * GIB;
         let target = cfg.max_cache_gib * cfg.low_water_ratio * GIB;
+        let should_collect = |last_used: f64, total: u64, available: u64| {
+            let expired = cfg.max_age_days > 0.0 && now() - last_used > cfg.max_age_days * 86400.0;
+            options.all_idle
+                || expired
+                || (available as f64) < cfg.min_free_gib * GIB
+                || (capacity_pressure && total as f64 > target)
+        };
         for entry in entries {
-            if entry.bytes == 0 {
+            if entry.bytes == 0 || !should_collect(entry.record.last_used, total, available) {
                 continue;
             }
             let key = entry.record.key;
-            let stale = cfg.max_age_days > 0.0
-                && now() - entry.record.last_used > cfg.max_age_days * 86400.0;
-            // A healthy disk makes the capacity limit a soft limit: evict only
-            // stale entries, otherwise alternating workspaces can churn their
-            // dependency caches at every build. Disk pressure still overrides
-            // the age floor so the safety threshold can be recovered.
-            let disk_pressure = (available as f64) < cfg.min_free_gib * GIB;
-            let eligible = disk_pressure || stale || (capacity_pressure && cfg.max_age_days == 0.0);
-            if !options.all_idle
-                && (!eligible || (!disk_pressure && capacity_pressure && total as f64 <= target))
-            {
-                continue;
-            }
             if options.protected.contains(&key) {
                 report.skipped.push(format!("{key}: current workspace"));
                 continue;
             }
             let candidate = (|| -> Result<u64> {
-                let _lease = self.lease(&key)?.ok_or("workspace is active/locked")?;
-                let record = self.read_record(&key)?;
-                let stale =
-                    cfg.max_age_days > 0.0 && now() - record.last_used > cfg.max_age_days * 86400.0;
-                let disk_pressure = (available as f64) < cfg.min_free_gib * GIB;
-                let eligible =
-                    disk_pressure || stale || (capacity_pressure && cfg.max_age_days == 0.0);
-                if !options.all_idle
-                    && (!eligible
-                        || (!disk_pressure && capacity_pressure && total as f64 <= target))
-                {
+                let _lease = if options.dry_run {
+                    existing_lock(&self.root.join("locks").join(format!("{key}.lock")))?
+                } else {
+                    Some(self.lease(&key)?.ok_or("workspace is active/locked")?)
+                };
+                let record = self
+                    .read_record(&key)?
+                    .ok_or("workspace path now resolves elsewhere")?;
+                if !should_collect(record.last_used, total, available) {
                     return Ok(0);
                 }
                 let path = self.root.join("workspaces").join(&key);
                 let tree = scan(&path)?;
                 let mut native_locks = Vec::new();
                 for (path, _) in &tree.files {
-                    if path.file_name().is_some_and(|name| name == ".cargo-lock") {
+                    if is_native_lock(path) {
                         native_locks
                             .push(Lease::acquire(path, false)?.ok_or("Cargo native lock is busy")?);
                     }
@@ -493,10 +567,11 @@ impl Store {
                     Ok(tree
                         .files
                         .iter()
-                        .filter(|(p, _)| p.file_name().is_none_or(|n| n != ".cargo-lock"))
+                        .filter(|(p, _)| !is_native_lock(p))
                         .map(|(_, n)| n)
                         .sum())
                 } else {
+                    self.ensure_storage()?;
                     match clear(&tree) {
                         Ok(removed) => Ok(removed),
                         Err(error) => {

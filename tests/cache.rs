@@ -90,7 +90,7 @@ fn pressure_collects_lru_until_low_water_mark() {
     let temp = temp();
     let mut cfg = config(temp.path());
     cfg.max_cache_gib = 9000.0 / GIB;
-    cfg.max_age_days = 0.0001;
+    cfg.max_age_days = 3.0;
     let store = Store::open(cfg, true).unwrap();
     let (a, pa) = add(&store, temp.path(), "oldest", 4096, 30.0);
     let (b, pb) = add(&store, temp.path(), "middle", 4096, 20.0);
@@ -108,21 +108,32 @@ fn pressure_collects_lru_until_low_water_mark() {
 }
 
 #[test]
-fn healthy_capacity_pressure_does_not_evict_recent_caches() {
+fn capacity_pressure_protects_active_and_current_caches_on_a_healthy_disk() {
     let temp = temp();
     let mut cfg = config(temp.path());
     cfg.max_cache_gib = 7000.0 / GIB;
-    cfg.max_age_days = 7.0;
+    cfg.max_age_days = 3.0;
+    cfg.min_free_gib = 15.0;
     let store = Store::open(cfg, true).unwrap();
-    let (_, pa) = add(&store, temp.path(), "recent-a", 4096, 1.0);
-    let (_, pb) = add(&store, temp.path(), "recent-b", 4096, 2.0);
+    let (active, active_path) = add(&store, temp.path(), "active", 4096, 30.0);
+    let (current, current_path) = add(&store, temp.path(), "current", 4096, 20.0);
+    let (idle, idle_path) = add(&store, temp.path(), "idle", 4096, 10.0);
+    let _lease = store.shared_lease(&active).unwrap().unwrap();
     let report = store
-        .collect_with_free(&GcOptions::default(), || Ok(u64::MAX))
+        .collect_with_free(
+            &GcOptions {
+                protected: [current].into(),
+                ..GcOptions::default()
+            },
+            || Ok(30 * GIB as u64),
+        )
         .unwrap();
-    assert_eq!(report.removed_bytes, 0);
+    assert_eq!(report.removed, [idle]);
+    assert_eq!(report.skipped.len(), 2);
     assert!(report.unresolved);
-    assert!(pa.join("debug/deps/cache.bin").exists());
-    assert!(pb.join("debug/deps/cache.bin").exists());
+    assert!(active_path.join("debug/deps/cache.bin").exists());
+    assert!(current_path.join("debug/deps/cache.bin").exists());
+    assert!(!idle_path.join("debug/deps/cache.bin").exists());
 }
 
 #[test]
@@ -170,6 +181,58 @@ fn dry_run_reports_but_preserves_bytes() {
             .len(),
         4096
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn relocated_workspace_does_not_block_pressure_cleanup_or_status() {
+    let temp = temp();
+    let mut cfg = config(temp.path());
+    cfg.min_free_gib = 1.0;
+    let store = Store::open(cfg.clone(), true).unwrap();
+    let (old_key, old_cache) = add(&store, temp.path(), "original", 4096, 0.0);
+    let (idle_key, idle_cache) = add(&store, temp.path(), "idle", 2048, 0.0);
+    let original = temp.path().join("original");
+    let relocated = temp.path().join("relocated");
+    fs::rename(&original, &relocated).unwrap();
+    std::os::unix::fs::symlink(&relocated, &original).unwrap();
+
+    let config_path = temp.path().join("config.toml");
+    cfg.save(&config_path).unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_cargoc"))
+        .arg("--cargoc-config")
+        .arg(&config_path)
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(status["total_bytes"], 2048);
+    assert_eq!(status["workspaces"][0]["record"]["key"], idle_key);
+    assert!(status["skipped"][0].as_str().unwrap().contains(&old_key));
+
+    let report = store
+        .collect_with_free(&GcOptions::default(), || {
+            Ok(if idle_cache.join("debug/deps/cache.bin").exists() {
+                GIB as u64 - 2048
+            } else {
+                GIB as u64
+            })
+        })
+        .unwrap();
+    assert_eq!(report.removed, [idle_key]);
+    assert_eq!(report.skipped.len(), 1);
+    assert!(report.skipped[0].contains("workspace path now resolves elsewhere"));
+    assert!(!report.unresolved);
+    assert!(old_cache.join("debug/deps/cache.bin").exists());
+    assert!(
+        store
+            .root
+            .join("state")
+            .join(format!("{old_key}.json"))
+            .exists()
+    );
+    assert!(relocated.join("Cargo.toml").exists());
 }
 
 #[test]
@@ -455,4 +518,33 @@ fn windows_identity_normalizes_case_verbatim_prefixes_and_source_boundaries() {
     let normal = PathBuf::from(r"C:\Users\example\workspace");
     let verbatim = PathBuf::from(r"\\?\C:\Users\example\workspace");
     assert_eq!(Store::key(&normal).unwrap(), Store::key(&verbatim).unwrap());
+}
+
+#[test]
+fn current_cargo_lock_files_are_protected_and_never_replaced() {
+    let (temp, store) = fixture();
+    let (_, path) = add(&store, temp.path(), "modern-locks", 1024, 0.0);
+    for name in [".cargo-build-lock", ".cargo-artifact-lock"] {
+        let lock = path.join("debug").join(name);
+        let held = Lease::acquire(&lock, true).unwrap().unwrap();
+        let report = store
+            .collect(&GcOptions {
+                all_idle: true,
+                ..GcOptions::default()
+            })
+            .unwrap();
+        assert_eq!(report.removed_bytes, 0);
+        assert!(!report.skipped.is_empty());
+        assert!(path.join("debug/deps/cache.bin").exists());
+        drop(held);
+    }
+    let report = store
+        .collect(&GcOptions {
+            all_idle: true,
+            ..GcOptions::default()
+        })
+        .unwrap();
+    assert_eq!(report.removed_bytes, 1024);
+    assert!(path.join("debug/.cargo-build-lock").exists());
+    assert!(path.join("debug/.cargo-artifact-lock").exists());
 }

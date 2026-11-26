@@ -20,6 +20,12 @@ pub struct Config {
     pub max_age_days: f64,
     pub poll_seconds: f64,
     pub cargo: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub require_mount: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_root_id: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub clean_roots: Vec<PathBuf>,
 }
 
 pub fn home() -> PathBuf {
@@ -202,12 +208,24 @@ impl Default for Config {
             max_age_days: 7.0,
             poll_seconds: 5.0,
             cargo: "cargo".into(),
+            require_mount: None,
+            required_root_id: None,
+            clean_roots: Vec::new(),
         }
     }
 }
 
 impl Config {
     pub fn validate(&self) -> Result<()> {
+        crate::storage::validate_settings(self)?;
+        for path in &self.clean_roots {
+            if !path.is_absolute()
+                || absolute(path)?.parent().is_none()
+                || identity_path(path)? == identity_path(&home())?
+            {
+                return fail("clean_roots must be absolute directories, not a drive root/home");
+            }
+        }
         for (key, value) in [
             ("max_cache_gib", self.max_cache_gib),
             ("low_water_ratio", self.low_water_ratio),

@@ -21,6 +21,10 @@ use std::{
 
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
+pub fn interrupted() -> bool {
+    INTERRUPTED.load(Ordering::SeqCst)
+}
+
 pub fn install_signal_handler() -> Result<()> {
     ctrlc::set_handler(|| INTERRUPTED.store(true, Ordering::SeqCst))?;
     Ok(())
@@ -421,14 +425,25 @@ pub fn run(config: Config, config_path: &Path, args: &[OsString]) -> Result<i32>
     run_with_free(config, config_path, args, |store| store.free())
 }
 
-fn run_with_free<F>(
+fn run_with_free<F>(config: Config, config_path: &Path, args: &[OsString], free: F) -> Result<i32>
+where
+    F: Fn(&Store) -> Result<u64>,
+{
+    run_with_checks(config, config_path, args, free, |store| {
+        store.ensure_storage()
+    })
+}
+
+fn run_with_checks<F, S>(
     mut config: Config,
     config_path: &Path,
     args: &[OsString],
     free: F,
+    storage: S,
 ) -> Result<i32>
 where
     F: Fn(&Store) -> Result<u64>,
+    S: Fn(&Store) -> Result<()>,
 {
     if args.is_empty() {
         return fail("Missing Cargo arguments");
@@ -530,8 +545,15 @@ where
         }
         .ok_or("Cache is busy; another cargoc cleanup is using it")?;
         touch()?;
-        if (free(&store)? as f64) < config.min_free_gib.max(config.abort_free_gib) * GIB {
-            return fail("Insufficient free disk after safe cleanup; refusing to start Cargo");
+        let available_gib = free(&store)? as f64 / GIB;
+        let required_gib = config.min_free_gib.max(config.abort_free_gib);
+        if available_gib < required_gib {
+            return fail(format!(
+                "Insufficient free disk after safe cleanup: {:.2} GiB available at {}, {:.2} GiB required. Refusing to start Cargo",
+                available_gib,
+                store.root.display(),
+                required_gib
+            ));
         }
         let path_text = build_dir
             .to_str()
@@ -551,6 +573,7 @@ where
             eprintln!("cargoc: managed install cache: {key}");
         }
         eprintln!("cargoc: intermediate cache: {}", build_dir.display());
+        storage(&store)?;
         let mut child = OwnedChild::spawn(&mut command)?;
         let mut next_check = Instant::now() + Duration::from_secs_f64(config.poll_seconds);
         let mut next_warning = Instant::now();
@@ -561,6 +584,10 @@ where
             }
             if let Some(status) = child.status()? {
                 break exit_code(status);
+            }
+            if let Err(error) = storage(&store) {
+                child.stop()?;
+                return Err(error);
             }
             if config.abort_free_gib > 0.0 && (free(&store)? as f64) < config.abort_free_gib * GIB {
                 eprintln!(
@@ -832,6 +859,52 @@ fn main() {{
         });
         assert!(result.is_err());
         let pid: u32 = fs::read_to_string(child_file).unwrap().parse().unwrap();
+        assert_stopped(pid);
+        let store = Store::open(config, false).unwrap();
+        let entry = store.entries().unwrap().pop().unwrap();
+        assert!(store.lease(&entry.record.key).unwrap().is_some());
+    }
+
+    #[test]
+    fn disconnected_storage_stops_owned_tree_even_when_emergency_threshold_is_disabled() {
+        let temp = tempfile::tempdir_in(fs::canonicalize(std::env::temp_dir()).unwrap()).unwrap();
+        let cargo = helper(&temp);
+        let (mut config, config_path) = config(&temp, cargo);
+        config.abort_free_gib = 0.0;
+        let child_file = temp.path().join("child-pid");
+        let args = [
+            OsString::from("install"),
+            OsString::from("storage-test"),
+            OsString::from("--started-file"),
+            temp.path().join("started").into_os_string(),
+            OsString::from("--child-file"),
+            child_file.clone().into_os_string(),
+        ];
+        let calls = AtomicUsize::new(0);
+        let result = run_with_checks(
+            config.clone(),
+            &config_path,
+            &args,
+            |_| Ok(u64::MAX),
+            |_| {
+                if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return Ok(());
+                }
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !child_file.is_file() {
+                    assert!(Instant::now() < deadline, "helper child did not start");
+                    thread::sleep(Duration::from_millis(5));
+                }
+                fail("Cache storage unavailable (injected disconnect)")
+            },
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("storage unavailable")
+        );
+        let pid = fs::read_to_string(child_file).unwrap().parse().unwrap();
         assert_stopped(pid);
         let store = Store::open(config, false).unwrap();
         let entry = store.entries().unwrap().pop().unwrap();
